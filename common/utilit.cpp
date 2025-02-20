@@ -9,6 +9,11 @@
 #include <filesystem>
 #include <iostream>
 #include <sstream>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <chrono>
+#include <iomanip>
 
 
 #include <plog/Initializers/RollingFileInitializer.h>
@@ -505,36 +510,173 @@ void CShortStringHolder::ReadShortStringHolder(std::string filename)
 template<class T>
 bool CShortStringHolder::CreateFromSequence(T begin, T end)
 {
-	m_Buffer.clear();
-	uint32_t Count = 0;
-	for (; begin != end; begin++)
-	{
-		size_t length = begin->length();
-		if (length > 254)
-		{
-			std::string s = *begin + " - too long";
-			ErrorMessage(s.c_str(), "Short std::string convertor");
-			return false;
-		};
+    // Подсчитываем общее количество и размер
+    size_t totalSize = 0;
+    uint32_t Count = 0;
+    for (T it = begin; it != end; ++it) {
+        size_t length = it->length();
+        if (length > 254) {
+            std::string s = *it + " - too long";
+            ErrorMessage(s.c_str(), "Short string convertor");
+            return false;
+        }
+        totalSize += length + 2;
+        Count++;
+    }
 
-		m_Buffer.push_back((BYTE)length);
-		// add with terminating null 
-		m_Buffer.insert(m_Buffer.end(), begin->c_str(), begin->c_str() + length+1);
+    if (Count == 0) return true;
 
-		Count++;
-	}
+    // Определяем количество потоков
+    const size_t num_threads = std::thread::hardware_concurrency();
+    const size_t items_per_thread = (Count + num_threads - 1) / num_threads;
 
-	
-	size_t Offset = 0;
-	clear();
-	for (uint32_t i=0; i < Count; i++)
-	{
-		CShortString R(m_Buffer.begin()+Offset);
-		push_back(R);
-		Offset +=   R.GetLength() + 2;
-	};
+    std::cout << "Processing " << Count << " items using " << num_threads << " threads\n\n";
 
-	return true;
+    // Структура для хранения результатов каждого потока
+    struct ThreadResult {
+        std::vector<char> buffer;
+        std::vector<size_t> offsets;
+    };
+    std::vector<ThreadResult> thread_results(num_threads);
+
+    // Запускаем потоки
+    std::vector<std::thread> threads;
+    std::mutex mtx;
+    std::atomic<size_t> total_processed{0};
+    std::string current_item;
+    std::mutex item_mutex;
+
+    // Запускаем поток для отображения прогресса
+    auto start_time = std::chrono::high_resolution_clock::now();
+    std::atomic<bool> processing_complete{false};
+    std::thread progress_thread([&]() {
+        while (!processing_complete) {
+            auto current_time = std::chrono::high_resolution_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
+            double seconds = elapsed.count() / 1000.0;
+            size_t current_processed = total_processed.load();
+            double items_per_second = current_processed / seconds;
+            double progress_percent = (current_processed * 100.0) / Count;
+
+            std::string item_str;
+            {
+                std::lock_guard<std::mutex> lock(item_mutex);
+                item_str = current_item;
+            }
+
+            std::cout << "\rProcessed " << current_processed << "/" << Count 
+                << " items (" << std::fixed << std::setprecision(1) << progress_percent << "%) "
+                << "Speed: " << std::setprecision(1) << items_per_second << " items/sec"
+                << " Current: " << item_str
+                << "    " << std::flush;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        }
+    });
+
+    auto process_chunk = [&](size_t thread_id, T chunk_begin, T chunk_end) {
+        ThreadResult& result = thread_results[thread_id];
+        
+        // Сначала подсчитаем размер для этого чанка
+        size_t chunk_size = 0;
+        size_t chunk_count = 0;
+        for (T it = chunk_begin; it != chunk_end && it != end; ++it) {
+            chunk_size += it->length() + 2;
+            chunk_count++;
+        }
+
+        // Резервируем память для буфера этого потока
+        result.buffer.reserve(chunk_size);
+        result.offsets.reserve(chunk_count);
+
+        // Заполняем буфер
+        size_t current_offset = 0;
+        for (T it = chunk_begin; it != chunk_end && it != end; ++it) {
+            {
+                std::lock_guard<std::mutex> lock(item_mutex);
+                current_item = *it;
+            }
+
+            size_t length = it->length();
+            result.offsets.push_back(current_offset);
+            
+            // Добавляем длину
+            result.buffer.push_back((BYTE)length);
+            
+            // Добавляем строку с нуль-терминатором
+            result.buffer.insert(result.buffer.end(), it->c_str(), it->c_str() + length + 1);
+            
+            current_offset += length + 2;
+            total_processed++;
+        }
+    };
+
+    // Запускаем потоки
+    T current = begin;
+    for (size_t i = 0; i < num_threads && current != end; ++i) {
+        T chunk_end = current;
+        size_t items = 0;
+        while (chunk_end != end && items < items_per_thread) {
+            ++chunk_end;
+            ++items;
+        }
+        threads.emplace_back(process_chunk, i, current, chunk_end);
+        current = chunk_end;
+    }
+
+    // Ждем завершения всех потоков
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    // Останавливаем поток прогресса
+    processing_complete = true;
+    progress_thread.join();
+
+    // Выводим финальную статистику
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    double seconds = duration.count() / 1000.0;
+    double items_per_second = Count / seconds;
+
+    std::cout << "\n\nProcessing completed in " << std::fixed << std::setprecision(2) 
+        << seconds << " seconds\n";
+    std::cout << "Average processing speed: " << std::fixed << std::setprecision(2) 
+        << items_per_second << " items/second\n\n";
+
+    // Подсчитываем общий размер буфера
+    size_t total_buffer_size = 0;
+    std::vector<size_t> buffer_offsets(thread_results.size());
+    for (size_t i = 0; i < thread_results.size(); ++i) {
+        buffer_offsets[i] = total_buffer_size;
+        total_buffer_size += thread_results[i].buffer.size();
+    }
+
+    std::cout << "Merging results from " << thread_results.size() << " threads...\n";
+
+    // Резервируем память для общего буфера
+    m_Buffer.clear();
+    m_Buffer.reserve(total_buffer_size);
+    clear();
+    reserve(Count);
+
+    // Объединяем результаты всех потоков
+    for (size_t i = 0; i < thread_results.size(); ++i) {
+        auto& result = thread_results[i];
+        size_t base_offset = buffer_offsets[i];
+        
+        // Копируем буфер
+        m_Buffer.insert(m_Buffer.end(), result.buffer.begin(), result.buffer.end());
+        
+        // Создаем CShortString для каждой строки
+        for (size_t offset : result.offsets) {
+            push_back(CShortString(m_Buffer.begin() + base_offset + offset));
+        }
+    }
+
+    std::cout << "Results merged successfully\n\n";
+
+    return true;
 }
 
 
