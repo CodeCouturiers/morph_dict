@@ -501,7 +501,8 @@ void CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 
 	const size_t num_threads = GetNumThreads();
 	const size_t lemmas_count = Wizard.m_LemmaToParadigm.size();
-	const size_t BATCH_SIZE = 5000;  // Оптимальный размер пакета
+	const size_t BATCH_SIZE = 10000;  // Увеличенный размер пакета
+	const size_t FORMS_BUFFER_SIZE = BATCH_SIZE * 20; // Предполагаемый размер буфера форм
 
 	printf("Generate the main automat ...\n");
 	std::atomic<size_t> FormsCount{0};
@@ -510,10 +511,11 @@ void CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 	std::string current_lemma;
 	std::mutex lemma_mutex;
 
-	// Запускаем поток для отображения прогресса
+	// Запускаем поток для отображения прогресса с меньшей частотой обновления
 	auto start_time = std::chrono::high_resolution_clock::now();
 	std::atomic<bool> processing_complete{false};
 	std::thread progress_thread([&]() {
+		std::string prev_lemma;
 		while (!processing_complete) {
 			auto current_time = std::chrono::high_resolution_clock::now();
 			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
@@ -529,15 +531,19 @@ void CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 				lemma_str = current_lemma;
 			}
 
-			std::cout << "\rProcessing automat: " << current_processed << "/" << lemmas_count 
-				<< " (" << std::fixed << std::setprecision(1) << progress_percent << "%) "
-				<< "Speed: " << std::setprecision(1) << lemmas_per_second << " lemmas/sec "
-				<< "Forms: " << FormsCount.load() << " "
-				<< "ETA: " << std::setprecision(0) << eta_seconds << "s "
-				<< "Current: " << lemma_str
-				<< "    " << std::flush;
+			// Обновляем только если изменилась лемма или прошло достаточно времени
+			if (lemma_str != prev_lemma) {
+				std::cout << "\rProcessing automat: " << current_processed << "/" << lemmas_count 
+					<< " (" << std::fixed << std::setprecision(1) << progress_percent << "%) "
+					<< "Speed: " << std::setprecision(1) << lemmas_per_second << " lemmas/sec "
+					<< "Forms: " << FormsCount.load() << " "
+					<< "ETA: " << std::setprecision(0) << eta_seconds << "s "
+					<< "Current: " << lemma_str
+					<< "    " << std::flush;
+				prev_lemma = lemma_str;
+			}
 
-			std::this_thread::sleep_for(std::chrono::milliseconds(300));
+			std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Увеличенный интервал обновления
 		}
 	});
 
@@ -545,19 +551,27 @@ void CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 	DwordVector EmptyGlobalPrefixes(1, 0);
 	std::atomic<size_t> batch_counter{0};
 
+	// Структура для хранения результатов пакетной обработки
+	struct BatchResult {
+		std::vector<std::string> forms;
+		size_t forms_count;
+
+		BatchResult() : forms_count(0) {
+			forms.reserve(FORMS_BUFFER_SIZE);
+		}
+	};
+
 	// Функция для обработки пакета лемм
 	auto process_batch = [&]() {
-		std::vector<std::string> local_forms;
-		local_forms.reserve(BATCH_SIZE * 10); // Примерная оценка форм на пакет
-		size_t local_forms_count = 0;
-
+		BatchResult local_result;
+		
 		while (true) {
 			// Получаем следующий пакет
 			size_t batch_start = batch_counter.fetch_add(BATCH_SIZE);
 			if (batch_start >= lemmas_count) break;
 
 			size_t batch_end = std::min(batch_start + BATCH_SIZE, lemmas_count);
-
+			
 			for (size_t i = batch_start; i < batch_end; ++i) {
 				auto it = std::next(Wizard.m_LemmaToParadigm.begin(), i);
 				
@@ -594,33 +608,35 @@ void CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 						uint32_t info = GetFormBuilder()->EncodeMorphAutomatInfo(ModelNo, ItemNo, (*pPrefixVector)[PrefixNo]);
 						WordForm += GetFormBuilder()->EncodeIntToAlphabet(info);
 						
-						local_forms.push_back(std::move(WordForm));
-						local_forms_count++;
+						local_result.forms.push_back(std::move(WordForm));
+						local_result.forms_count++;
 					}
 				}
 
 				LemmaNo++;
 
-				// Периодически добавляем накопленные формы в автомат
-				if (local_forms.size() >= BATCH_SIZE * 5) {
+				// Добавляем формы в автомат пакетами для уменьшения блокировок
+				if (local_result.forms.size() >= FORMS_BUFFER_SIZE) {
 					std::lock_guard<std::mutex> lock(automat_mutex);
-					for (const auto& form : local_forms) {
+					for (const auto& form : local_result.forms) {
 						GetFormBuilder()->AddStringDaciuk(form);
 					}
-					local_forms.clear();
+					FormsCount += local_result.forms_count;
+					local_result.forms.clear();
+					local_result.forms_count = 0;
+					local_result.forms.reserve(FORMS_BUFFER_SIZE);
 				}
 			}
 		}
 
 		// Добавляем оставшиеся формы
-		if (!local_forms.empty()) {
+		if (!local_result.forms.empty()) {
 			std::lock_guard<std::mutex> lock(automat_mutex);
-			for (const auto& form : local_forms) {
+			for (const auto& form : local_result.forms) {
 				GetFormBuilder()->AddStringDaciuk(form);
 			}
+			FormsCount += local_result.forms_count;
 		}
-
-		FormsCount += local_forms_count;
 	};
 
 	// Запускаем потоки
