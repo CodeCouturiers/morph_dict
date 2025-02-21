@@ -42,12 +42,14 @@ void    CMorphDict::GetLemmaInfos(const std::string& Text, size_t TextPos, std::
 
 	const size_t textLength = Text.length();
 	std::vector<CAutomAnnotationInner> additInfos;
+	std::vector<CAutomAnnotationInner> validInfos;  // Store valid annotations
 
-	for (CAutomAnnotationInner& annot : Infos)
+	for (const CAutomAnnotationInner& annot : Infos)  // Changed to const reference since we'll rebuild
 	{
 		OutputDebugStringA(Format("[GetLemmaInfos] Processing annotation - ModelNo: %d, ItemNo: %d, PrefixNo: %d\n",
 			annot.m_ModelNo, annot.m_ItemNo, annot.m_PrefixNo).c_str());
 
+		// Validate model number
 		if (annot.m_ModelNo >= m_FlexiaModels.size()) {
 			OutputDebugStringA(Format("[GetLemmaInfos] ERROR: Invalid model number %d >= %zu\n", 
 				annot.m_ModelNo, m_FlexiaModels.size()).c_str());
@@ -55,19 +57,44 @@ void    CMorphDict::GetLemmaInfos(const std::string& Text, size_t TextPos, std::
 		}
 
 		const CFlexiaModel& F = m_FlexiaModels[annot.m_ModelNo];
+		
+		// Validate item number
+		if (annot.m_ItemNo >= F.m_Flexia.size()) {
+			OutputDebugStringA(Format("[GetLemmaInfos] ERROR: Invalid item number %d >= %zu\n", 
+				annot.m_ItemNo, F.m_Flexia.size()).c_str());
+			continue;
+		}
+		
 		const CMorphForm& M = F.m_Flexia[annot.m_ItemNo];
 		
+		// Validate prefix number
 		if (annot.m_PrefixNo >= m_Prefixes.size()) {
 			OutputDebugStringA(Format("[GetLemmaInfos] ERROR: Invalid prefix number %d >= %zu\n", 
 				annot.m_PrefixNo, m_Prefixes.size()).c_str());
 			continue;
 		}
 
+		// Calculate text position
 		size_t textStartPos = TextPos + m_Prefixes[annot.m_PrefixNo].length() + M.m_PrefixStr.length();
+		
+		// Validate text positions
+		if (textStartPos >= textLength) {
+			OutputDebugStringA(Format("[GetLemmaInfos] ERROR: Invalid text position %zu >= %zu\n", 
+				textStartPos, textLength).c_str());
+			continue;
+		}
+		
+		// Validate remaining text length
+		if (textLength < textStartPos + M.m_FlexiaStr.length()) {
+			OutputDebugStringA("[GetLemmaInfos] ERROR: Text too short for flexia\n");
+			continue;
+		}
+
 		std::string Base = m_Prefixes[annot.m_PrefixNo] + Text.substr(textStartPos, textLength - textStartPos - M.m_FlexiaStr.length());
 		
 		OutputDebugStringA(Format("[GetLemmaInfos] Calculated base: '%s'\n", Base.c_str()).c_str());
 
+		// Validate model index
 		if (annot.m_ModelNo >= m_ModelsIndex.size() - 1) {
 			OutputDebugStringA(Format("[GetLemmaInfos] ERROR: Model index out of bounds %d >= %zu\n", 
 				annot.m_ModelNo, m_ModelsIndex.size() - 1).c_str());
@@ -80,6 +107,7 @@ void    CMorphDict::GetLemmaInfos(const std::string& Text, size_t TextPos, std::
 		OutputDebugStringA(Format("[GetLemmaInfos] Searching in range: %zd to %zd (total size: %zu)\n",
 			m_ModelsIndex[annot.m_ModelNo], m_ModelsIndex[annot.m_ModelNo + 1], m_LemmaInfos.size()).c_str());
 
+		// Validate iterator range
 		if (start > end || end > m_LemmaInfos.end()) {
 			OutputDebugStringA("[GetLemmaInfos] ERROR: Invalid iterator range\n");
 			continue;
@@ -87,37 +115,53 @@ void    CMorphDict::GetLemmaInfos(const std::string& Text, size_t TextPos, std::
 
 		auto pair_it = equal_range(start, end, Base.c_str(), m_SearchInfoLess);
 		
-		if (pair_it.first == m_LemmaInfos.end()) {
-			OutputDebugStringA("[GetLemmaInfos] No matches found for base\n");
-			continue;
-		}
-
-		if (pair_it.first >= pair_it.second) {
-			OutputDebugStringA("[GetLemmaInfos] WARNING: Empty range returned by equal_range\n");
+		// Validate search results
+		if (pair_it.first == m_LemmaInfos.end() || pair_it.first >= pair_it.second) {
+			OutputDebugStringA("[GetLemmaInfos] No valid matches found\n");
 			continue;
 		}
 
 		size_t firstPos = pair_it.first - m_LemmaInfos.begin();
 		size_t secondPos = pair_it.second - m_LemmaInfos.begin();
+		
+		if (firstPos >= m_LemmaInfos.size()) {
+			OutputDebugStringA("[GetLemmaInfos] ERROR: First position out of range\n");
+			continue;
+		}
+
 		OutputDebugStringA(Format("[GetLemmaInfos] Found range: %zu to %zu\n", firstPos, secondPos).c_str());
 
-		// Set the first match
-		annot.m_LemmaInfoNo = firstPos;
-		OutputDebugStringA(Format("[GetLemmaInfos] Set first match LemmaInfoNo: %d\n", annot.m_LemmaInfoNo).c_str());
+		// Create new annotation with validated LemmaInfoNo
+		CAutomAnnotationInner validAnnot = annot;
+		validAnnot.m_LemmaInfoNo = firstPos;
+		validInfos.push_back(validAnnot);
+		
+		OutputDebugStringA(Format("[GetLemmaInfos] Added first match with LemmaInfoNo: %d\n", validAnnot.m_LemmaInfoNo).c_str());
 
 		// Add additional homonyms
 		size_t homonymCount = 0;
 		for (auto it = pair_it.first + 1; it != pair_it.second; ++it) {
+			size_t lemmaInfoNo = it - m_LemmaInfos.begin();
+			if (lemmaInfoNo >= m_LemmaInfos.size()) {
+				OutputDebugStringA("[GetLemmaInfos] ERROR: Homonym position out of range\n");
+				continue;
+			}
+			
 			CAutomAnnotationInner new_annot = annot;
-			new_annot.m_LemmaInfoNo = it - m_LemmaInfos.begin();
-			additInfos.emplace_back(new_annot);
+			new_annot.m_LemmaInfoNo = lemmaInfoNo;
+			additInfos.push_back(new_annot);
 			homonymCount++;
 		}
 		OutputDebugStringA(Format("[GetLemmaInfos] Added %zu additional homonyms\n", homonymCount).c_str());
 	}
 
+	// Replace original Infos with validated ones
+	Infos = std::move(validInfos);
+	
+	// Add the additional homonyms
 	size_t oldSize = Infos.size();
 	Infos.insert(Infos.end(), additInfos.begin(), additInfos.end());
+	
 	OutputDebugStringA(Format("[GetLemmaInfos] Final results - Original size: %zu, Added: %zu, Total: %zu\n", 
 		oldSize, additInfos.size(), Infos.size()).c_str());
 	OutputDebugStringA("[GetLemmaInfos] Completed successfully\n");
