@@ -5,6 +5,8 @@
 #include "MorphDictBuilder.h"
 #include "Lemmatizers.h"
 #include "fstream"
+#include <chrono>
+#include <iomanip>
 
 const size_t MaxLemmaPrefixCount = 0x200;
 const size_t MaxLemmaCount = 0x800000;
@@ -28,6 +30,12 @@ void CMorphDictBuilder::GenerateLemmas(const MorphoWizard& Wizard)
 	{	// creaing CMorphDict::m_Bases
 		std::set<std::string> Bases;
 		
+		auto start_time = std::chrono::steady_clock::now();
+		auto last_update = start_time;
+		const auto update_interval = std::chrono::seconds(1);
+		size_t base_count = 0;
+		size_t total_lemmas = Wizard.m_LemmaToParadigm.size();
+		
 		for( const_lemma_iterator_t lemm_it= Wizard.m_LemmaToParadigm.begin(); lemm_it!=Wizard.m_LemmaToParadigm.end(); lemm_it++ )
 		{
 			std::set<std::string> curr_bases;
@@ -42,8 +50,29 @@ void CMorphDictBuilder::GenerateLemmas(const MorphoWizard& Wizard)
 				curr_bases.insert(Wizard.get_base_string(lemm_it));
 
 			InfoToBases.push_back(curr_bases);
+			base_count += curr_bases.size();
 			Bases.insert(curr_bases.begin(), curr_bases.end());
+			
+			if (!(base_count % 3000)) {
+				auto current_time = std::chrono::steady_clock::now();
+				auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - last_update);
+				
+				if (elapsed >= update_interval) {
+					double bases_per_sec = static_cast<double>(base_count) / 
+						std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
+					std::cerr << "Processing bases: " << base_count << " (" << std::fixed 
+						<< std::setprecision(1) << bases_per_sec << " bases/s)\r";
+					last_update = current_time;
+				}
+			}
 		};
+
+		auto end_time = std::chrono::steady_clock::now();
+		double total_time = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
+		double avg_bases_per_sec = static_cast<double>(base_count) / total_time;
+
+		std::cerr << "\nProcessed " << base_count << " bases in " << total_time << " seconds ("
+			<< std::fixed << std::setprecision(1) << avg_bases_per_sec << " bases/s)\n";
 
 		std::cout << "CreateFromSet\n";
 		m_Bases.CreateFromSet(Bases);
@@ -166,12 +195,27 @@ void  CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 	printf ("Generate the main automat ...\n");
 	size_t FormsCount = 0;
 	
+	// Add timing variables
+	auto start_time = std::chrono::steady_clock::now();
+	auto last_update = start_time;
+	const auto update_interval = std::chrono::seconds(1);
+	
 	for( const_lemma_iterator_t it=Wizard.m_LemmaToParadigm.begin(); it!=Wizard.m_LemmaToParadigm.end(); it++ )
 	{
-
-		if (!(LemmaNo % 3000))
-			std::cerr << "Lemma " << LemmaNo << "/" << Wizard.m_LemmaToParadigm.size() << " RegisterSize =" << RegisterSize << "    \r";
+		if (!(LemmaNo % 3000)) {
+			auto current_time = std::chrono::steady_clock::now();
+			auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - last_update);
 			
+			if (elapsed >= update_interval) {
+				double forms_per_sec = static_cast<double>(FormsCount) / 
+					std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
+				std::cerr << "Lemma " << LemmaNo << "/" << Wizard.m_LemmaToParadigm.size() 
+					<< " Forms: " << FormsCount << " (" << std::fixed << std::setprecision(1) 
+					<< forms_per_sec << " forms/s) RegisterSize=" << RegisterSize << "\r";
+				last_update = current_time;
+			}
+		}
+
 		size_t ModelNo = it->second.m_FlexiaModelNo;
 		if (ModelNo  > Wizard.m_FlexiaModels.size())
 		{
@@ -227,7 +271,13 @@ void  CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 		LemmaNo++;
 	};
 
-	std::cerr <<  "Lemma " << LemmaNo << "/" << Wizard.m_LemmaToParadigm.size() << " RegisterSize =" << RegisterSize << "\n";
+	auto end_time = std::chrono::steady_clock::now();
+	double total_time = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
+	double avg_forms_per_sec = static_cast<double>(FormsCount) / total_time;
+
+	std::cerr << "\nProcessed " << LemmaNo << " lemmas and " << FormsCount << " forms "
+		<< "in " << total_time << " seconds (" 
+		<< std::fixed << std::setprecision(1) << avg_forms_per_sec << " forms/s)\n";
 
 	if (LemmaNo >  0xffffff)
 	{

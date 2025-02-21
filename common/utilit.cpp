@@ -9,6 +9,8 @@
 #include <filesystem>
 #include <iostream>
 #include <sstream>
+#include <chrono>
+#include <iomanip>
 
 
 #include <plog/Initializers/RollingFileInitializer.h>
@@ -507,6 +509,12 @@ bool CShortStringHolder::CreateFromSequence(T begin, T end)
 {
 	m_Buffer.clear();
 	uint32_t Count = 0;
+	
+	auto start_time = std::chrono::steady_clock::now();
+	auto last_update = start_time;
+	const auto update_interval = std::chrono::seconds(1);
+	size_t total_items = std::distance(begin, end);
+	
 	for (; begin != end; begin++)
 	{
 		size_t length = begin->length();
@@ -522,8 +530,26 @@ bool CShortStringHolder::CreateFromSequence(T begin, T end)
 		m_Buffer.insert(m_Buffer.end(), begin->c_str(), begin->c_str() + length+1);
 
 		Count++;
+		
+		if (!(Count % 3000)) {
+			auto current_time = std::chrono::steady_clock::now();
+			auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - last_update);
+			
+			if (elapsed >= update_interval) {
+				double items_per_sec = static_cast<double>(Count) / 
+					std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
+				std::cerr << "Processing items: " << Count << "/" << total_items << " (" 
+					<< std::fixed << std::setprecision(1) << items_per_sec << " items/s)\r";
+				last_update = current_time;
+			}
+		}
 	}
 
+	auto end_time = std::chrono::steady_clock::now();
+	double total_time = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
+	double avg_items_per_sec = static_cast<double>(Count) / total_time;
+	std::cerr << "\nProcessed " << Count << " items in " << total_time << " seconds ("
+		<< std::fixed << std::setprecision(1) << avg_items_per_sec << " items/s)\n";
 	
 	size_t Offset = 0;
 	clear();
@@ -545,7 +571,15 @@ bool CShortStringHolder::CreateFromVector(const StringVector& in)
 
 bool CShortStringHolder::CreateFromSet(const StringSet& in)
 {
-	return CreateFromSequence<StringSet::const_iterator>(in.begin(), in.end());
+	clock_t start = clock();
+	size_t totalSize = in.size();
+	bool result = CreateFromSequence<StringSet::const_iterator>(in.begin(), in.end());
+	clock_t end = clock();
+	double seconds = (double)(end - start) / CLOCKS_PER_SEC;
+	double itemsPerSecond = totalSize / seconds;
+	std::cout << "CreateFromSet: processed " << totalSize << " items in " << seconds << " seconds (" 
+	          << itemsPerSecond << " items/sec)" << std::endl;
+	return result;
 }
 
 void CShortStringHolder::WriteShortStringHolder(const std::string& FileName) const
