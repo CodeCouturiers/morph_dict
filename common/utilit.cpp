@@ -515,6 +515,21 @@ bool CShortStringHolder::CreateFromSequence(T begin, T end)
 	const auto update_interval = std::chrono::seconds(1);
 	size_t total_items = std::distance(begin, end);
 	
+	// Pre-calculate total buffer size needed to avoid reallocations
+	size_t total_buffer_size = 0;
+	for (T it = begin; it != end; ++it) {
+		total_buffer_size += it->length() + 2; // length byte + string + null terminator
+	}
+	m_Buffer.reserve(total_buffer_size);
+	
+	// Reserve space for the final vector of CShortString
+	reserve(total_items);
+	
+	// Use a temporary buffer for batch insertions
+	const size_t BATCH_SIZE = 10000;
+	std::vector<char> temp_buffer;
+	temp_buffer.reserve(BATCH_SIZE * 256); // Assuming average string length < 256
+	
 	for (; begin != end; begin++)
 	{
 		size_t length = begin->length();
@@ -525,9 +540,12 @@ bool CShortStringHolder::CreateFromSequence(T begin, T end)
 			return false;
 		};
 
+		// Add length byte
 		m_Buffer.push_back((BYTE)length);
-		// add with terminating null 
-		m_Buffer.insert(m_Buffer.end(), begin->c_str(), begin->c_str() + length+1);
+		
+		// Optimize string insertion by using pointer arithmetic
+		const char* str = begin->c_str();
+		m_Buffer.insert(m_Buffer.end(), str, str + length + 1);
 
 		Count++;
 		
@@ -551,14 +569,14 @@ bool CShortStringHolder::CreateFromSequence(T begin, T end)
 	std::cerr << "\nProcessed " << Count << " items in " << total_time << " seconds ("
 		<< std::fixed << std::setprecision(1) << avg_items_per_sec << " items/s)\n";
 	
-	size_t Offset = 0;
+	// Build final vector more efficiently
 	clear();
-	for (uint32_t i=0; i < Count; i++)
+	size_t Offset = 0;
+	for (uint32_t i = 0; i < Count; i++)
 	{
-		CShortString R(m_Buffer.begin()+Offset);
-		push_back(R);
-		Offset +=   R.GetLength() + 2;
-	};
+		push_back(CShortString(m_Buffer.begin() + Offset));
+		Offset += (BYTE)m_Buffer[Offset] + 2;
+	}
 
 	return true;
 }
