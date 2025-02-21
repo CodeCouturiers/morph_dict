@@ -5,24 +5,16 @@
 #include "MorphDictBuilder.h"
 #include "Lemmatizers.h"
 #include "fstream"
-#include <thread>
-#include <future>
-#include <mutex>
-#include <numeric>
-#include <chrono>
-#include <iomanip>
-#include <locale>
-#include <windows.h>
 
 const size_t MaxLemmaPrefixCount = 0x200;
 const size_t MaxLemmaCount = 0x800000;
 const size_t MaxFlexiaModelsCount = 0x8000;
 const size_t MaxNumberFormsInOneParadigm = 0x200;
 
-CMorphDictBuilder::CMorphDictBuilder(size_t num_threads) 
-:	CMorphDict(morphUnknown),
-	m_num_threads(num_threads)
+CMorphDictBuilder::CMorphDictBuilder() 
+:	CMorphDict(morphUnknown)
 {
+	
 };
 
 CMorphDictBuilder::~CMorphDictBuilder() 
@@ -31,433 +23,101 @@ CMorphDictBuilder::~CMorphDictBuilder()
 
 void CMorphDictBuilder::GenerateLemmas(const MorphoWizard& Wizard) 
 {
-	// Устанавливаем кодировку консоли для корректного отображения русского текста
-	SetConsoleOutputCP(1251);
-	SetConsoleCP(1251);
-	std::locale::global(std::locale(""));
-
-	std::cout << "GenerateLemmas\n\n";
-	
-	// Замеряем время начала
-	auto start_time = std::chrono::high_resolution_clock::now();
-	
-	// Определяем количество потоков
-	const size_t num_threads = GetNumThreads();
-	const size_t lemmas_count = Wizard.m_LemmaToParadigm.size();
-	const size_t chunk_size = (lemmas_count + num_threads - 1) / num_threads;
-	
-	std::cout << "Processing " << lemmas_count << " lemmas using " << num_threads << " threads\n\n";
-
-	// Создаем вектор для результатов каждого потока
-	std::vector<std::vector<std::set<std::string>>> thread_info_to_bases(num_threads);
-	std::vector<std::set<std::string>> thread_bases(num_threads);
-	std::vector<std::thread> threads;
-	std::mutex bases_mutex;
-	std::atomic<size_t> processed_lemmas{0};
-	std::string current_lemma;
-	std::mutex lemma_mutex;
-
-	// Запускаем поток для отображения прогресса
-	std::atomic<bool> processing_complete{false};
-	std::thread progress_thread([&]() {
-		while (!processing_complete) {
-			auto current_time = std::chrono::high_resolution_clock::now();
-			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
-			double seconds = elapsed.count() / 1000.0;
-			size_t current_processed = processed_lemmas.load();
-			double lemmas_per_second = current_processed / seconds;
-			double progress_percent = (current_processed * 100.0) / lemmas_count;
-
-			std::string lemma_str;
-			{
-				std::lock_guard<std::mutex> lock(lemma_mutex);
-				lemma_str = current_lemma;
-			}
-
-			std::wstring wlemma(lemma_str.begin(), lemma_str.end());
-			std::wcout << L"\rProcessed " << current_processed << L"/" << lemmas_count 
-				<< L" lemmas (" << std::fixed << std::setprecision(1) << progress_percent << L"%) "
-				<< L"Speed: " << std::setprecision(1) << lemmas_per_second << L" lemmas/sec"
-				<< L" Current: " << wlemma
-				<< L"    " << std::flush;
-
-			std::this_thread::sleep_for(std::chrono::milliseconds(300));
-		}
-	});
-
-	// Функция для обработки части лемм в отдельном потоке
-	auto process_chunk = [&](size_t thread_id, size_t start, size_t end) {
-		auto& local_info_to_bases = thread_info_to_bases[thread_id];
-		auto& local_bases = thread_bases[thread_id];
+	std::cout << "GenerateLemmas\n";
+	std::vector<std::set<std::string> > InfoToBases;
+	{	// creaing CMorphDict::m_Bases
+		std::set<std::string> Bases;
 		
-		auto it_start = std::next(Wizard.m_LemmaToParadigm.begin(), start);
-		auto it_end = std::next(Wizard.m_LemmaToParadigm.begin(), std::min(end, lemmas_count));
-
-		for(auto lemm_it = it_start; lemm_it != it_end; ++lemm_it) {
-			{
-				std::lock_guard<std::mutex> lock(lemma_mutex);
-				current_lemma = Wizard.get_base_string(lemm_it);
-			}
-
+		for( const_lemma_iterator_t lemm_it= Wizard.m_LemmaToParadigm.begin(); lemm_it!=Wizard.m_LemmaToParadigm.end(); lemm_it++ )
+		{
 			std::set<std::string> curr_bases;
 
-			if (lemm_it->second.m_PrefixSetNo != UnknownPrefixSetNo) {
+			if (lemm_it->second.m_PrefixSetNo != UnknownPrefixSetNo)
+			{
 				const std::set<std::string>& s = Wizard.m_PrefixSets[lemm_it->second.m_PrefixSetNo];
 				for(std::set<std::string>::const_iterator it_s = s.begin(); it_s != s.end(); it_s++)
-					curr_bases.insert(*it_s + Wizard.get_base_string(lemm_it));
+					curr_bases.insert(*it_s+Wizard.get_base_string(lemm_it));
 			}
-			else {
+			else
 				curr_bases.insert(Wizard.get_base_string(lemm_it));
-			}
 
-			local_info_to_bases.push_back(curr_bases);
-			local_bases.insert(curr_bases.begin(), curr_bases.end());
-			processed_lemmas++;
-		}
-	};
-
-	// Запускаем потоки
-	for(size_t i = 0; i < num_threads; ++i) {
-		size_t start = i * chunk_size;
-		size_t end = start + chunk_size;
-		threads.emplace_back(process_chunk, i, start, end);
-	}
-
-	// Ждем завершения всех потоков
-	for(auto& thread : threads) {
-		thread.join();
-	}
-
-	// Объединяем результаты всех потоков
-	std::vector<std::set<std::string>> InfoToBases;
-	std::set<std::string> Bases;
-
-	for(auto& thread_info : thread_info_to_bases) {
-		InfoToBases.insert(InfoToBases.end(), thread_info.begin(), thread_info.end());
-	}
-
-	// Замеряем время начала объединения баз
-	auto start_time_bases = std::chrono::high_resolution_clock::now();
-	size_t total_bases = 0;
-	for(auto& thread_base : thread_bases) {
-		total_bases += thread_base.size();
-	}
-
-	std::cout << "\n\nMerging " << total_bases << " bases...\n";
-	
-	// Сбрасываем счетчики для этапа объединения баз
-	processed_lemmas = 0;
-	processing_complete = false;
-
-	// Запускаем поток для отображения прогресса объединения баз
-	std::thread progress_thread_bases([&]() {
-		while (!processing_complete) {
-			auto current_time = std::chrono::high_resolution_clock::now();
-			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time_bases);
-			double seconds = elapsed.count() / 1000.0;
-			size_t current_processed = Bases.size();
-			double bases_per_second = current_processed / seconds;
-			double progress_percent = (current_processed * 100.0) / total_bases;
-
-			std::cout << "\rMerging bases: " << current_processed << "/" << total_bases 
-				<< " (" << std::fixed << std::setprecision(1) << progress_percent << "%) "
-				<< "Speed: " << std::setprecision(1) << bases_per_second << " bases/sec"
-				<< "    " << std::flush;
-
-			std::this_thread::sleep_for(std::chrono::milliseconds(300));
-		}
-	});
-
-	// Объединяем базы параллельно
-	std::vector<std::thread> merge_threads;
-	std::mutex bases_merge_mutex;
-	const size_t merge_chunk_size = (thread_bases.size() + num_threads - 1) / num_threads;
-
-	auto merge_chunk = [&](size_t start, size_t end) {
-		std::set<std::string> local_bases;
-		
-		// Сначала объединяем локально
-		for(size_t i = start; i < end && i < thread_bases.size(); ++i) {
-			local_bases.insert(thread_bases[i].begin(), thread_bases[i].end());
-		}
-
-		// Затем добавляем в общий set под мьютексом
-		{
-			std::lock_guard<std::mutex> lock(bases_merge_mutex);
-			Bases.insert(local_bases.begin(), local_bases.end());
-		}
-	};
-
-	for(size_t i = 0; i < num_threads; ++i) {
-		size_t start = i * merge_chunk_size;
-		size_t end = start + merge_chunk_size;
-		merge_threads.emplace_back(merge_chunk, start, end);
-	}
-
-	for(auto& thread : merge_threads) {
-		thread.join();
-	}
-
-	// Завершаем поток прогресса объединения баз
-	processing_complete = true;
-	progress_thread_bases.join();
-
-	// Выводим статистику по объединению баз
-	auto end_time_bases = std::chrono::high_resolution_clock::now();
-	auto duration_bases = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_bases - start_time_bases);
-	double seconds_bases = duration_bases.count() / 1000.0;
-	
-	std::cout << "\nBases merged in " << std::fixed << std::setprecision(2) 
-		<< seconds_bases << " seconds (" << Bases.size() << " unique bases)\n\n";
-
-	// Замеряем время CreateFromSet
-	std::cout << "Starting CreateFromSet...\n";
-	auto start_time_create = std::chrono::high_resolution_clock::now();
-	
-	m_Bases.CreateFromSet(Bases);
-	
-	auto end_time_create = std::chrono::high_resolution_clock::now();
-	auto duration_create = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_create - start_time_create);
-	double seconds_create = duration_create.count() / 1000.0;
-	
-	std::cout << "CreateFromSet completed in " << std::fixed << std::setprecision(2) 
-		<< seconds_create << " seconds\n\n";
-
-	// Завершаем поток прогресса перед следующим этапом
-	processing_complete = true;
-	progress_thread.join();
-
-	std::cout << "\n\nCreateFromSet\n\n";
-
-	{
-		std::cout << "create LemmaInfos\n\n";
-		
-		// Создаем вектор для хранения результатов каждого потока
-		std::vector<std::vector<CLemmaInfoAndLemma>> thread_lemma_infos(num_threads);
-		std::vector<std::thread> info_threads;
-		
-		// Сбрасываем счетчики для нового этапа
-		processed_lemmas = 0;
-		processing_complete = false;
-
-		// Размер пакета для обработки
-		const size_t BATCH_SIZE = 1000;
-		std::atomic<size_t> batch_counter{0};
-
-		auto start_time_infos = std::chrono::high_resolution_clock::now();
-		std::thread progress_thread([&]() {
-			while (!processing_complete) {
-				auto current_time = std::chrono::high_resolution_clock::now();
-				auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time_infos);
-				double seconds = elapsed.count() / 1000.0;
-				size_t current_processed = processed_lemmas.load();
-				double lemmas_per_second = current_processed / seconds;
-				double progress_percent = (current_processed * 100.0) / lemmas_count;
-				double eta_seconds = (lemmas_count - current_processed) / (lemmas_per_second > 0 ? lemmas_per_second : 1);
-
-				std::string lemma_str;
-				{
-					std::lock_guard<std::mutex> lock(lemma_mutex);
-					lemma_str = current_lemma;
-				}
-
-				std::cout << "\rProcessing lemma infos: " << current_processed << "/" << lemmas_count 
-					<< " (" << std::fixed << std::setprecision(1) << progress_percent << "%) "
-					<< "Speed: " << std::setprecision(1) << lemmas_per_second << " lemmas/sec "
-					<< "ETA: " << std::setprecision(0) << eta_seconds << "s "
-					<< "Current: " << lemma_str
-					<< "    " << std::flush;
-
-				std::this_thread::sleep_for(std::chrono::milliseconds(300));
-			}
-		});
-
-		// Функция для обработки части лемм в отдельном потоке
-		auto process_lemma_infos = [&](size_t thread_id) {
-			auto& local_lemma_infos = thread_lemma_infos[thread_id];
-			local_lemma_infos.reserve(lemmas_count / num_threads);  // Предварительное резервирование памяти
-
-			while (true) {
-				// Получаем следующий пакет для обработки
-				size_t batch_start = batch_counter.fetch_add(BATCH_SIZE);
-				if (batch_start >= lemmas_count) break;
-
-				size_t batch_end = std::min(batch_start + BATCH_SIZE, lemmas_count);
-				std::vector<CLemmaInfoAndLemma> batch_results;
-				batch_results.reserve(BATCH_SIZE);
-
-				for (size_t i = batch_start; i < batch_end; ++i) {
-					auto lemm_it = std::next(Wizard.m_LemmaToParadigm.begin(), i);
-					CLemmaInfoAndLemma I;
-					
-					{
-						std::lock_guard<std::mutex> lock(lemma_mutex);
-						current_lemma = Wizard.get_base_string(lemm_it);
-					}
-					
-					for (std::set<std::string>::const_iterator it = InfoToBases[i].begin(); 
-						it != InfoToBases[i].end(); ++it) {
-						std::vector<CShortString>::const_iterator base_it = 
-							lower_bound(m_Bases.begin(), m_Bases.end(), it->c_str(), IsLessShortString());
-						assert(base_it != m_Bases.end());
-						assert(*it == base_it->GetString());
-						I.m_LemmaStrNo = base_it - m_Bases.begin();
-						I.m_LemmaInfo = lemm_it->second;
-						batch_results.push_back(I);
-					}
-					processed_lemmas++;
-				}
-
-				// Добавляем результаты пакета в локальный вектор
-				local_lemma_infos.insert(local_lemma_infos.end(), 
-									   std::make_move_iterator(batch_results.begin()),
-									   std::make_move_iterator(batch_results.end()));
-			}
+			InfoToBases.push_back(curr_bases);
+			Bases.insert(curr_bases.begin(), curr_bases.end());
 		};
 
-		// Запускаем потоки
-		for (size_t i = 0; i < num_threads; ++i) {
-			info_threads.emplace_back(process_lemma_infos, i);
-		}
+		std::cout << "CreateFromSet\n";
+		m_Bases.CreateFromSet(Bases);
+	};
 
-		// Ждем завершения всех потоков
-		for (auto& thread : info_threads) {
-			thread.join();
-		}
-
-		// Останавливаем поток прогресса
-		processing_complete = true;
-		progress_thread.join();
-
-		// Подсчитываем общий размер результата
-		size_t total_size = 0;
-		for (const auto& thread_infos : thread_lemma_infos) {
-			total_size += thread_infos.size();
-		}
-
-		// Резервируем память для финального результата
-		m_LemmaInfos.reserve(total_size);
-
-		// Объединяем результаты всех потоков
-		std::cout << "\n\nMerging results from " << thread_lemma_infos.size() << " threads...\n";
-		for (auto& thread_infos : thread_lemma_infos) {
-			m_LemmaInfos.insert(m_LemmaInfos.end(),
-							   std::make_move_iterator(thread_infos.begin()),
-							   std::make_move_iterator(thread_infos.end()));
-		}
-
-		// Сортируем общий результат
-		std::cout << "Sorting " << m_LemmaInfos.size() << " lemma infos...\n";
+	{
+		std::cout << "create LemmaInfos\n";
+		size_t Index = 0;
+		for( const_lemma_iterator_t lemm_it= Wizard.m_LemmaToParadigm.begin(); lemm_it!=Wizard.m_LemmaToParadigm.end(); lemm_it++ )
+		{
+			CLemmaInfoAndLemma I;
+			
+			for(std::set<std::string>::const_iterator it = InfoToBases[Index].begin(); it != InfoToBases[Index].end(); it++)
+			{
+				std::vector<CShortString>::const_iterator base_it =  lower_bound(m_Bases.begin(), m_Bases.end(), it->c_str(), IsLessShortString());
+				assert (base_it != m_Bases.end());
+				assert (*it == base_it->GetString());
+				I.m_LemmaStrNo = base_it - m_Bases.begin();
+				I.m_LemmaInfo = lemm_it->second;
+				m_LemmaInfos.push_back(I);
+			}
+			Index++;
+		};
 		sort(m_LemmaInfos.begin(), m_LemmaInfos.end());
+	};
 
-		// Выводим финальную статистику
-		auto end_time_infos = std::chrono::high_resolution_clock::now();
-		auto duration_infos = std::chrono::duration_cast<std::chrono::milliseconds>(end_time_infos - start_time_infos);
-		double seconds_infos = duration_infos.count() / 1000.0;
-		double final_speed = lemmas_count / seconds_infos;
+	
+	if (m_LemmaInfos.size() >= MaxLemmaCount)
+	{
+		throw CExpc ("Cannot be more than %i lemmas\n", MaxLemmaCount-1); 
+	};
 
-		std::cout << "\nLemma infos processing completed in " << std::fixed << std::setprecision(2) 
-			<< seconds_infos << " seconds\n";
-		std::cout << "Final processing speed: " << std::setprecision(2) 
-			<< final_speed << " lemmas/second\n\n";
-	}
-
-	if (m_LemmaInfos.size() >= MaxLemmaCount) {
-		throw CExpc("Cannot be more than %i lemmas\n", MaxLemmaCount-1); 
-	}
-
-	// Замеряем время окончания и выводим финальную статистику
-	auto end_time = std::chrono::high_resolution_clock::now();
-	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-	double seconds = duration.count() / 1000.0;
-	double lemmas_per_second = lemmas_count / seconds;
-
-	std::cout << "\n\nGenerateLemmas completed in " << std::fixed << std::setprecision(2) 
-		<< seconds << " seconds\n";
-	std::cout << "Final processing speed: " << std::fixed << std::setprecision(2) 
-		<< lemmas_per_second << " lemmas/second\n\n";
 }
 
-void CMorphDictBuilder::GenerateUnitedFlexModels(const MorphoWizard& Wizard)
-{
-	printf("GenerateUnitedFlexModels\n");
-	
-	const size_t num_threads = GetNumThreads();
-	const size_t models_count = Wizard.m_FlexiaModels.size();
-	const size_t chunk_size = (models_count + num_threads - 1) / num_threads;
 
+
+void  CMorphDictBuilder::GenerateUnitedFlexModels(const MorphoWizard& Wizard)
+{
+	printf ("GenerateUnitedFlexModels\n");
 	// Creating m_ModelInfo
 	m_ModelInfo.clear();
 	m_FlexiaModels.clear();
 	m_ProductiveModels.clear();
-
-	if(models_count >= MaxFlexiaModelsCount) {
-		throw CExpc("Cannot be more than %i flexia models\n", MaxFlexiaModelsCount-1); 
-	}
-
-	// Предварительно резервируем память
-	m_ModelInfo.resize(models_count);
-	m_FlexiaModels.resize(models_count);
-	m_ProductiveModels.resize(models_count);
-
-	std::vector<std::thread> threads;
-	std::mutex models_mutex;
-
-	// Функция для обработки части моделей в отдельном потоке
-	auto process_models = [&](size_t start, size_t end) {
-		for(size_t i = start; i < end && i < models_count; ++i) {
-			// Создаем локальную копию модели для модификации
-			CFlexiaModel p = Wizard.m_FlexiaModels[i];
-
-			// Проверяем размер модели
-			if(p.m_Flexia.size() >= MaxNumberFormsInOneParadigm) {
-				throw CExpc("Error: flexia %s contains more than %i forms!", 
-					p.ToString().c_str(), MaxNumberFormsInOneParadigm);
-			}
-
-			// Устанавливаем признак продуктивности
-			auto pos = Wizard.m_pGramTab->GetPartOfSpeech(p.get_first_code().c_str());
-			m_ProductiveModels[i] = Wizard.m_pGramTab->PartOfSpeechIsProductive(pos) ? 1 : 0;
-
-			// Создаем вектор флагов для форм
-			std::vector<bool> model_info(p.m_Flexia.size(), true);
-
-			// Объединяем одинаковые формы
-			for(size_t j = 0; j < p.m_Flexia.size(); j++) {
-				if(model_info[j]) {
-					for(size_t k = j + 1; k < p.m_Flexia.size(); k++) {
-						if((p.m_Flexia[k].m_FlexiaStr == p.m_Flexia[j].m_FlexiaStr) &&
-						   (p.m_Flexia[k].m_PrefixStr == p.m_Flexia[j].m_PrefixStr))
-						{
-							model_info[k] = false;
-							p.m_Flexia[j].m_Gramcode.insert(
-								p.m_Flexia[j].m_Gramcode.end(),
-								p.m_Flexia[k].m_Gramcode.begin(),
-								p.m_Flexia[k].m_Gramcode.end()
-							);
-						}
-					}
-				}
-			}
-
-			// Сохраняем результаты
-			m_ModelInfo[i] = std::move(model_info);
-			m_FlexiaModels[i] = std::move(p);
-		}
+	if (Wizard.m_FlexiaModels.size() >=  MaxFlexiaModelsCount)
+	{
+		throw CExpc ("Cannot be more than %i flexia models\n", MaxFlexiaModelsCount-1); 
 	};
 
-	// Запускаем потоки
-	for(size_t i = 0; i < num_threads; ++i) {
-		size_t start = i * chunk_size;
-		size_t end = start + chunk_size;
-		threads.emplace_back(process_models, start, end);
-	}
+	for(auto p : Wizard.m_FlexiaModels)
+	{
+		{
+			auto pos = Wizard.m_pGramTab->GetPartOfSpeech(p.get_first_code().c_str());
+			m_ProductiveModels.push_back(Wizard.m_pGramTab->PartOfSpeechIsProductive(pos) ? 1 : 0);
+		}
+		m_ModelInfo.push_back(std::vector<bool>(p.m_Flexia.size(), true));
 
-	// Ждем завершения всех потоков
-	for(auto& thread : threads) {
-		thread.join();
-	}
-}
+		if ( p.m_Flexia.size() >=  MaxNumberFormsInOneParadigm)
+		{
+			throw CExpc ("Error: flexia %s contains more than %i forms. !", p.ToString().c_str(), MaxNumberFormsInOneParadigm);
+		};
+
+		for (size_t i=0; i <p.m_Flexia.size(); i++)
+			if (m_ModelInfo.back()[i])
+				for (size_t j=i+1; j <p.m_Flexia.size(); j++)
+					if (		(p.m_Flexia[j].m_FlexiaStr ==  p.m_Flexia[i].m_FlexiaStr)
+							&&	(p.m_Flexia[j].m_PrefixStr ==  p.m_Flexia[i].m_PrefixStr)
+						)
+						{
+							m_ModelInfo.back()[j] = false;
+							p.m_Flexia[i].m_Gramcode.insert(p.m_Flexia[i].m_Gramcode.end(),p.m_Flexia[j].m_Gramcode.begin(),p.m_Flexia[j].m_Gramcode.end());
+						};
+		m_FlexiaModels.push_back(p);
+	};
+};
 
 // generate unique prefixes over all prefix sets
 void  CMorphDictBuilder::GeneratePrefixes(const MorphoWizard& Wizard)
@@ -493,170 +153,92 @@ void  CMorphDictBuilder::GeneratePrefixes(const MorphoWizard& Wizard)
 
 extern size_t RegisterSize;
 
-void CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
+void  CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 {
 	GetFormBuilder()->InitTrie();
 	m_AccentModels = Wizard.m_AccentModels;
 	GeneratePrefixes(Wizard);
-
-	const size_t num_threads = GetNumThreads();
-	const size_t lemmas_count = Wizard.m_LemmaToParadigm.size();
-	const size_t BATCH_SIZE = 5000;  // Оптимальный размер пакета
-
-	printf("Generate the main automat ...\n");
-	std::atomic<size_t> FormsCount{0};
-	std::atomic<size_t> LemmaNo{0};
-	std::mutex automat_mutex;
-	std::string current_lemma;
-	std::mutex lemma_mutex;
-
-	// Запускаем поток для отображения прогресса
-	auto start_time = std::chrono::high_resolution_clock::now();
-	std::atomic<bool> processing_complete{false};
-	std::thread progress_thread([&]() {
-		while (!processing_complete) {
-			auto current_time = std::chrono::high_resolution_clock::now();
-			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
-			double seconds = elapsed.count() / 1000.0;
-			size_t current_processed = LemmaNo.load();
-			double lemmas_per_second = current_processed / seconds;
-			double progress_percent = (current_processed * 100.0) / lemmas_count;
-			double eta_seconds = (lemmas_count - current_processed) / (lemmas_per_second > 0 ? lemmas_per_second : 1);
-
-			std::string lemma_str;
-			{
-				std::lock_guard<std::mutex> lock(lemma_mutex);
-				lemma_str = current_lemma;
-			}
-
-			std::cout << "\rProcessing automat: " << current_processed << "/" << lemmas_count 
-				<< " (" << std::fixed << std::setprecision(1) << progress_percent << "%) "
-				<< "Speed: " << std::setprecision(1) << lemmas_per_second << " lemmas/sec "
-				<< "Forms: " << FormsCount.load() << " "
-				<< "ETA: " << std::setprecision(0) << eta_seconds << "s "
-				<< "Current: " << lemma_str
-				<< "    " << std::flush;
-
-			std::this_thread::sleep_for(std::chrono::milliseconds(300));
-		}
-	});
-
-	std::vector<std::thread> threads;
+	// Creating tries for paradigms
+	size_t RuleNo = 0; 
+	size_t LemmaNo = 0;
+	size_t ReusedNodes = 0;
 	DwordVector EmptyGlobalPrefixes(1, 0);
-	std::atomic<size_t> batch_counter{0};
+	printf ("Generate the main automat ...\n");
+	size_t FormsCount = 0;
+	
+	for( const_lemma_iterator_t it=Wizard.m_LemmaToParadigm.begin(); it!=Wizard.m_LemmaToParadigm.end(); it++ )
+	{
 
-	// Функция для обработки пакета лемм
-	auto process_batch = [&]() {
-		std::vector<std::string> local_forms;
-		local_forms.reserve(BATCH_SIZE * 10); // Примерная оценка форм на пакет
-		size_t local_forms_count = 0;
+		if (!(LemmaNo % 3000))
+			std::cerr << "Lemma " << LemmaNo << "/" << Wizard.m_LemmaToParadigm.size() << " RegisterSize =" << RegisterSize << "    \r";
+			
+		size_t ModelNo = it->second.m_FlexiaModelNo;
+		if (ModelNo  > Wizard.m_FlexiaModels.size())
+		{
+			throw CExpc("Bad flexia model  : %s\n", Wizard.get_lemm_string(it).c_str());
+		};
 
-		while (true) {
-			// Получаем следующий пакет
-			size_t batch_start = batch_counter.fetch_add(BATCH_SIZE);
-			if (batch_start >= lemmas_count) break;
+		DwordVector* pPrefixVector = &EmptyGlobalPrefixes;
+		if (it->second.m_PrefixSetNo != UnknownPrefixSetNo)
+			pPrefixVector = & (m_PrefixSets[it->second.m_PrefixSetNo] );
 
-			size_t batch_end = std::min(batch_start + BATCH_SIZE, lemmas_count);
+		assert (!pPrefixVector->empty());
 
-			for (size_t i = batch_start; i < batch_end; ++i) {
-				auto it = std::next(Wizard.m_LemmaToParadigm.begin(), i);
-				
+		const CFlexiaModel&p = Wizard.m_FlexiaModels[ModelNo];
+		const std::vector <bool>& Infos = m_ModelInfo[ModelNo];
+		
+		for (size_t PrefixNo = 0; PrefixNo < pPrefixVector->size();PrefixNo++)
+		{
+			std::string base  = Wizard.get_base_string(it);
+			
+			for (size_t ItemNo=0; ItemNo <p.m_Flexia.size(); ItemNo++)
+			if (Infos[ItemNo])
+			{
+				std::string WordForm = m_Prefixes[(*pPrefixVector)[PrefixNo]];
+				WordForm += p.m_Flexia[ItemNo].m_PrefixStr;
+				WordForm += base;
+				WordForm += p.m_Flexia[ItemNo].m_FlexiaStr;
+
+				WordForm += GetFormBuilder()->m_AnnotChar;
 				{
-					std::lock_guard<std::mutex> lock(lemma_mutex);
-					current_lemma = Wizard.get_base_string(it);
-				}
+					FormsCount++;
+					uint32_t info = 	GetFormBuilder()->EncodeMorphAutomatInfo(ModelNo, ItemNo, (*pPrefixVector)[PrefixNo]);
+
+					{	// checking encoding
+						size_t checkModelNo, checkItemNo,checkPrefixNo;
+						GetFormBuilder()->DecodeMorphAutomatInfo(info, checkModelNo, checkItemNo, checkPrefixNo);
+
+						if (		(checkModelNo != ModelNo)
+								||	(checkItemNo != ItemNo)
+								||	(checkPrefixNo != (*pPrefixVector)[PrefixNo])
+							)
+						{
+							throw CExpc ("General annotation encoding error!");
+						};
+
+					};
+
+					WordForm += GetFormBuilder()->EncodeIntToAlphabet(info);	
+				};
 				
-				size_t ModelNo = it->second.m_FlexiaModelNo;
-				if (ModelNo > Wizard.m_FlexiaModels.size()) {
-					throw CExpc("Bad flexia model: %s\n", Wizard.get_lemm_string(it).c_str());
-				}
-
-				DwordVector* pPrefixVector = &EmptyGlobalPrefixes;
-				if (it->second.m_PrefixSetNo != UnknownPrefixSetNo)
-					pPrefixVector = &(m_PrefixSets[it->second.m_PrefixSetNo]);
-
-				assert(!pPrefixVector->empty());
-
-				const CFlexiaModel& p = Wizard.m_FlexiaModels[ModelNo];
-				const std::vector<bool>& Infos = m_ModelInfo[ModelNo];
-				
-				for (size_t PrefixNo = 0; PrefixNo < pPrefixVector->size(); PrefixNo++) {
-					std::string base = Wizard.get_base_string(it);
-					
-					for (size_t ItemNo = 0; ItemNo < p.m_Flexia.size(); ItemNo++)
-					if (Infos[ItemNo]) {
-						std::string WordForm = m_Prefixes[(*pPrefixVector)[PrefixNo]];
-						WordForm += p.m_Flexia[ItemNo].m_PrefixStr;
-						WordForm += base;
-						WordForm += p.m_Flexia[ItemNo].m_FlexiaStr;
-						WordForm += GetFormBuilder()->m_AnnotChar;
-
-						uint32_t info = GetFormBuilder()->EncodeMorphAutomatInfo(ModelNo, ItemNo, (*pPrefixVector)[PrefixNo]);
-						WordForm += GetFormBuilder()->EncodeIntToAlphabet(info);
-						
-						local_forms.push_back(std::move(WordForm));
-						local_forms_count++;
-					}
-				}
-
-				LemmaNo++;
-
-				// Периодически добавляем накопленные формы в автомат
-				if (local_forms.size() >= BATCH_SIZE * 5) {
-					std::lock_guard<std::mutex> lock(automat_mutex);
-					for (const auto& form : local_forms) {
-						GetFormBuilder()->AddStringDaciuk(form);
-					}
-					local_forms.clear();
-				}
-			}
-		}
-
-		// Добавляем оставшиеся формы
-		if (!local_forms.empty()) {
-			std::lock_guard<std::mutex> lock(automat_mutex);
-			for (const auto& form : local_forms) {
-				GetFormBuilder()->AddStringDaciuk(form);
-			}
-		}
-
-		FormsCount += local_forms_count;
+				GetFormBuilder()->AddStringDaciuk(WordForm);
+			};
+		};
+		LemmaNo++;
 	};
 
-	// Запускаем потоки
-	for (size_t i = 0; i < num_threads; ++i) {
-		threads.emplace_back(process_batch);
-	}
+	std::cerr <<  "Lemma " << LemmaNo << "/" << Wizard.m_LemmaToParadigm.size() << " RegisterSize =" << RegisterSize << "\n";
 
-	// Ждем завершения всех потоков
-	for (auto& thread : threads) {
-		thread.join();
-	}
-
-	// Останавливаем поток прогресса
-	processing_complete = true;
-	progress_thread.join();
-
-	// Выводим финальную статистику
-	auto end_time = std::chrono::high_resolution_clock::now();
-	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-	double seconds = duration.count() / 1000.0;
-	double final_speed = lemmas_count / seconds;
-
-	std::cout << "\n\nAutomat generation completed in " << std::fixed << std::setprecision(2) 
-		<< seconds << " seconds\n";
-	std::cout << "Final processing speed: " << std::setprecision(2) 
-		<< final_speed << " lemmas/second\n";
-	std::cout << "Total forms generated: " << FormsCount.load() << "\n\n";
-
-	if (LemmaNo > 0xffffff) {
+	if (LemmaNo >  0xffffff)
+	{
 		throw CExpc("Cannot be more than 0xffffff lemmas"); 
-	}
-
+	};
+	fprintf (stderr,"Count of word forms =  %zu\n", FormsCount);
+	
 	GetFormBuilder()->ClearRegister();
-	std::cout << "Converting build relations to relations for word forms...\n";
+	fprintf(stderr, "ConvertBuildRelationsToRelations for word forms...  \n");
 	GetFormBuilder()->ConvertBuildRelationsToRelations();
-}
+};
 
 void create_options(CJsonObject& opts, bool allow_russian_jo, int postfix_len, int min_freq) {
 	opts.add_bool("AllowRussianJo", allow_russian_jo);
@@ -684,40 +266,6 @@ void  CMorphDictBuilder::BuildLemmatizer(std::string mwz_path, bool allow_russia
 
 	create_options(opts, allow_russian_jo, postfix_len, min_freq);
 
-	// Create output directory with proper permissions
-	try {
-		fs::path out_dir = fs::path(output_folder);
-		
-		// Create all parent directories if they don't exist
-		if (!fs::exists(out_dir.parent_path())) {
-			if (!fs::create_directories(out_dir.parent_path())) {
-				throw std::runtime_error("Failed to create parent directories for " + output_folder);
-			}
-		}
-		
-		// Create the output directory if it doesn't exist
-		if (!fs::exists(out_dir)) {
-			if (!fs::create_directories(out_dir)) {
-				throw std::runtime_error("Failed to create directory " + output_folder);
-			}
-		}
-
-		// Set directory permissions to allow full access
-		#ifdef _WIN32
-		fs::permissions(out_dir, 
-			fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read | fs::perms::others_exec,
-			fs::perm_options::replace);
-		#else
-		fs::permissions(out_dir, 
-			fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read | fs::perms::others_exec);
-		#endif
-
-	} catch (const fs::filesystem_error& e) {
-		throw CExpc("Filesystem error: %s", e.what());
-	} catch (const std::exception& e) {
-		throw CExpc("Error creating output directory: %s", e.what());
-	}
-
 	MorphoWizard wizard;
 	wizard.load_wizard(mwz_path.c_str(), "guest", false, true, true);
 	m_Language = wizard.m_Language;
@@ -732,26 +280,6 @@ void  CMorphDictBuilder::BuildLemmatizer(std::string mwz_path, bool allow_russia
 		CreateAutomat(wizard);
 		LOGI << "Saving...";
 		auto outFileName = fs::path(output_folder) / MORPH_MAIN_FILES;
-		
-		// Ensure parent directory exists with proper permissions before saving
-		try {
-			if (!fs::exists(outFileName.parent_path())) {
-				if (!fs::create_directories(outFileName.parent_path())) {
-					throw std::runtime_error("Failed to create directory for " + outFileName.string());
-				}
-				#ifdef _WIN32
-				fs::permissions(outFileName.parent_path(), 
-					fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read | fs::perms::others_exec,
-					fs::perm_options::replace);
-				#else
-				fs::permissions(outFileName.parent_path(), 
-					fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read | fs::perms::others_exec);
-				#endif
-			}
-		} catch (const fs::filesystem_error& e) {
-			throw CExpc("Filesystem error while creating output directory: %s", e.what());
-		}
-
 		Save(outFileName.string());
 		LOGI << "Successful written indices of the main automat to " << outFileName << std::endl;
 		if (!opts.get_value()["SkipPredictBase"].GetBool()) {
@@ -764,60 +292,17 @@ void  CMorphDictBuilder::BuildLemmatizer(std::string mwz_path, bool allow_russia
 
 	{
 		auto opt_path = fs::path(output_folder) / OPTIONS_FILE;
-		try {
-			// Ensure parent directory exists with proper permissions
-			if (!fs::exists(opt_path.parent_path())) {
-				if (!fs::create_directories(opt_path.parent_path())) {
-					throw std::runtime_error("Failed to create directory for " + opt_path.string());
-				}
-				#ifdef _WIN32
-				fs::permissions(opt_path.parent_path(), 
-					fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read | fs::perms::others_exec,
-					fs::perm_options::replace);
-				#else
-				fs::permissions(opt_path.parent_path(), 
-					fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read | fs::perms::others_exec);
-				#endif
-			}
-			LOGI << "writing options file " << opt_path;
-			opts.dump_rapidjson_pretty(opt_path.string());
-		} catch (const fs::filesystem_error& e) {
-			throw CExpc("Filesystem error while writing options file: %s", e.what());
-		}
+		LOGI << "writing options file " << opt_path;
+		opts.dump_rapidjson_pretty(opt_path.string());
 	}
 
 	{
 		fs::path src = wizard.m_GramtabPath;
 		fs::path trg = output_folder / wizard.m_GramtabPath.filename();
-		try {
-			// Ensure parent directory exists with proper permissions
-			if (!fs::exists(trg.parent_path())) {
-				if (!fs::create_directories(trg.parent_path())) {
-					throw std::runtime_error("Failed to create directory for " + trg.string());
-				}
-				#ifdef _WIN32
-				fs::permissions(trg.parent_path(), 
-					fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read | fs::perms::others_exec,
-					fs::perm_options::replace);
-				#else
-				fs::permissions(trg.parent_path(), 
-					fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read | fs::perms::others_exec);
-				#endif
-			}
-			if (!fs::exists(trg) || !fs::equivalent(src, trg)) {
-				fs::copy_file(src, trg, fs::copy_options::overwrite_existing);
-				// Set file permissions
-				#ifdef _WIN32
-				fs::permissions(trg, 
-					fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read,
-					fs::perm_options::replace);
-				#else
-				fs::permissions(trg, 
-					fs::perms::owner_all | fs::perms::group_all | fs::perms::others_read);
-				#endif
-			}
-		} catch (const fs::filesystem_error& e) {
-			throw CExpc("Filesystem error while copying gramtab file: %s", e.what());
+		if (!fs::exists(trg) || !fs::equivalent(src, trg)) {
+			fs::copy_file(src, trg, fs::copy_options::overwrite_existing);
 		}
 	}
+
+
 }
