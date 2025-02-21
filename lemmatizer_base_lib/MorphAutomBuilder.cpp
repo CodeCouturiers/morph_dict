@@ -15,6 +15,8 @@
 #include "MorphAutomBuilder.h"
 #include "queue"
 #include "assert.h"
+#include <algorithm>
+#include <cassert>
 
 //======================================================
 //=============		CTrieNodeBuild	   =============
@@ -27,11 +29,10 @@ void CTrieNodeBuild::Initialize()
 	m_bFinal = false;
 	m_IncomingRelationsCount = 0;
 	m_bRegistered = false;
-	m_NodeId = NodeId++;
-	memset(m_Children,0, sizeof(CTrieNodeBuild*)*MaxAlphabetSize);
+	m_NodeId = -1;
 	m_FirstChildNo = 0xff;
 	m_SecondChildNo = 0xff;
-
+	std::fill(m_Children, m_Children + MaxAlphabetSize, nullptr);
 };
 
 
@@ -43,39 +44,64 @@ void CTrieNodeBuild::SetFinal(bool bFinal)
 
 
 
-void  CTrieNodeBuild::AddChild(CTrieNodeBuild* Child, BYTE ChildNo )
+void CTrieNodeBuild::AddChild(CTrieNodeBuild* Child, BYTE ChildNo)
 {
-	assert (Child != this);
-	Child->m_IncomingRelationsCount++;
+	assert(Child != this);
+	assert(ChildNo < MaxAlphabetSize);
+	
+	// If there's already a child, update its incoming count
+	if (m_Children[ChildNo]) {
+		m_Children[ChildNo]->m_IncomingRelationsCount--;
+	}
+	
 	m_Children[ChildNo] = Child;
+	Child->m_IncomingRelationsCount++;
 
-	if (ChildNo < m_FirstChildNo)
+	// Update FirstChildNo and SecondChildNo
+	if (m_FirstChildNo == 0xff || ChildNo < m_FirstChildNo)
 	{
 		m_SecondChildNo = m_FirstChildNo;
 		m_FirstChildNo = ChildNo;
 	}
-	else
-		if (		(ChildNo != m_FirstChildNo) 
-				&&	(ChildNo < m_SecondChildNo)
-			)
-		{
-			m_SecondChildNo = ChildNo;
-			assert ( m_FirstChildNo < m_SecondChildNo);
-		};
-};
+	else if (ChildNo != m_FirstChildNo && (m_SecondChildNo == 0xff || ChildNo < m_SecondChildNo))
+	{
+		m_SecondChildNo = ChildNo;
+		assert(m_FirstChildNo < m_SecondChildNo);
+	}
+}
 
-void  CTrieNodeBuild::ModifyChild(CTrieNodeBuild* Child, BYTE ChildNo, bool bUpdateIncoming)
+void CTrieNodeBuild::ModifyChild(CTrieNodeBuild* Child, BYTE ChildNo, bool bUpdateIncoming)
 {
+	assert(ChildNo < MaxAlphabetSize);
+	
 	CTrieNodeBuild* OldChild = m_Children[ChildNo];
-	assert (OldChild);
-	if (OldChild == Child) return;
+	if (!OldChild || OldChild == Child) return;
 
-	if (bUpdateIncoming)
+	if (bUpdateIncoming) {
 		OldChild->m_IncomingRelationsCount--;
+	}
 
-	// adding the new child 
-	AddChild(Child, ChildNo);
-};
+	m_Children[ChildNo] = Child;
+	if (Child) {
+		Child->m_IncomingRelationsCount++;
+	}
+
+	// Update FirstChildNo and SecondChildNo
+	m_FirstChildNo = 0xff;
+	m_SecondChildNo = 0xff;
+	
+	// Recalculate FirstChildNo and SecondChildNo
+	for (BYTE i = 0; i < MaxAlphabetSize; i++) {
+		if (m_Children[i]) {
+			if (m_FirstChildNo == 0xff) {
+				m_FirstChildNo = i;
+			}
+			else if (i != m_FirstChildNo && (m_SecondChildNo == 0xff || i < m_SecondChildNo)) {
+				m_SecondChildNo = i;
+			}
+		}
+	}
+}
 
 
 
@@ -83,6 +109,7 @@ void  CTrieNodeBuild::ModifyChild(CTrieNodeBuild* Child, BYTE ChildNo, bool bUpd
 
 CTrieNodeBuild* CTrieNodeBuild::GetNextNode(BYTE ChildNo)  const
 {
+	assert (ChildNo < MaxAlphabetSize);
 	return m_Children[ChildNo];
 };
 
@@ -91,24 +118,25 @@ CTrieNodeBuild* CTrieNodeBuild::GetNextNode(BYTE ChildNo)  const
 
 void CTrieNodeBuild::GetIncomingRelationsCountRecursive(std::map<const CTrieNodeBuild*, size_t>& Node2Incoming) const
 {
+	if (Node2Incoming.find(this) != Node2Incoming.end()) {
+		return;
+	}
 	
+	Node2Incoming[this] = 0;
 	for (size_t i=m_FirstChildNo; i < MaxAlphabetSize; i++)
 	if (m_Children[i])
 	{
-		if (Node2Incoming.find(m_Children[i]) == Node2Incoming.end())
-			m_Children[i]->GetIncomingRelationsCountRecursive(Node2Incoming);
-
 		Node2Incoming[m_Children[i]]++;
+		m_Children[i]->GetIncomingRelationsCountRecursive(Node2Incoming);
 	};
 };
 
 bool CTrieNodeBuild::CheckIncomingRelationsCountRecursive(std::map<const CTrieNodeBuild*, size_t>& Node2Incoming) const
 {
-	size_t debug = Node2Incoming[this];
-	assert (Node2Incoming[this] == m_IncomingRelationsCount);
-	if (Node2Incoming[this] != m_IncomingRelationsCount)
+	if (Node2Incoming[this] != m_IncomingRelationsCount) {
 		return false;
-
+	}
+	
 	for (size_t i=m_FirstChildNo; i < MaxAlphabetSize; i++)
 		if (m_Children[i])
 			if (!m_Children[i]->CheckIncomingRelationsCountRecursive( Node2Incoming))
@@ -119,12 +147,9 @@ bool CTrieNodeBuild::CheckIncomingRelationsCountRecursive(std::map<const CTrieNo
 
 bool CTrieNodeBuild::CheckRegisterRecursive() const
 {
-	if (m_bRegistered)
-	{
-		assert (*m_pRegister == this);
-		if (*m_pRegister != this)
-			return false;
-	};
+	if (m_bRegistered && !m_RegisteredNode) {
+		return false;
+	}
 	
 	for (size_t i=m_FirstChildNo; i < MaxAlphabetSize; i++)
 		if (m_Children[i])
@@ -136,6 +161,7 @@ bool CTrieNodeBuild::CheckRegisterRecursive() const
 
 void	CTrieNodeBuild::SetNodeIdNullRecursive ()
 {
+	if (m_NodeId == -1) return;
 	m_NodeId = -1;
 	for (size_t i=m_FirstChildNo; i < MaxAlphabetSize; i++)
 		if (m_Children[i])
@@ -146,6 +172,7 @@ void	CTrieNodeBuild::SetNodeIdNullRecursive ()
 void	CTrieNodeBuild::UnregisterRecursive()
 {
 	m_bRegistered = false;
+	m_RegisteredNode = nullptr;
 	for (size_t i=m_FirstChildNo; i < MaxAlphabetSize; i++)
 		if (m_Children[i])
 			m_Children[i]->UnregisterRecursive( );
@@ -185,104 +212,69 @@ bool IsLessRegister::operator ()(const CTrieNodeBuild* pNodeNo1, const CTrieNode
 //=============		CMorphAutomatBuilder	   =============
 //======================================================
 
-CMorphAutomatBuilder::CMorphAutomatBuilder(MorphLanguageEnum Language, BYTE AnnotChar) :	CMorphAutomat(Language, AnnotChar)
+CMorphAutomatBuilder::CMorphAutomatBuilder(MorphLanguageEnum Language, BYTE AnnotChar) 
+    : CMorphAutomat(Language, AnnotChar)
+    , m_pRoot(nullptr)
+    , m_EstimatedNodes(0)
 {
-	m_pRoot = 0;
-	
-};
+	InitTrie();
+}
 
-CMorphAutomatBuilder::~CMorphAutomatBuilder()
-{
+CMorphAutomatBuilder::~CMorphAutomatBuilder() {
 	ClearBuildNodes();
-};
+}
 
-void CMorphAutomatBuilder::DeleteNode(CTrieNodeBuild* pNode)
-{
-	for (size_t i=pNode->m_FirstChildNo; i < MaxAlphabetSize; i++)
-		if (pNode->m_Children[i])
-		{
-			if (pNode->m_Children[i]->m_IncomingRelationsCount==1)
-				DeleteNode(pNode->m_Children[i]);
-			else
-				//  we decrement incoming relations count; we will back soon using another path.
-				pNode->m_Children[i]->m_IncomingRelationsCount--;
+void CMorphAutomatBuilder::ReserveSpace(size_t estimatedForms) {
+	m_EstimatedNodes = estimatedForms * 2;  // Rough estimate
+	m_NodePool.reserve(m_EstimatedNodes);
+}
 
-		};
-	
+CTrieNodeBuild* CMorphAutomatBuilder::CreateNode() {
+	CTrieNodeBuild* node = new CTrieNodeBuild();
+	node->Initialize();
+	m_NodePool.push_back(node);
+	return node;
+}
+
+void CMorphAutomatBuilder::DeleteNode(CTrieNodeBuild* pNode) {
+	if (!pNode) return;
 	m_DeletedNodes.push_back(pNode);
+}
 
-};
-
-CTrieNodeBuild* CMorphAutomatBuilder::CreateNode()
-{
-	CTrieNodeBuild* pNode; 
-	if (!m_DeletedNodes.empty())
-	{
-		pNode	= m_DeletedNodes.back();
-		m_DeletedNodes.erase(m_DeletedNodes.end() - 1);
-		
-	}
-	else
-		pNode = new CTrieNodeBuild;
-
-	pNode->Initialize();
+CTrieNodeBuild* CMorphAutomatBuilder::CloneNode(const CTrieNodeBuild* pPrototype) {
+	if (!pPrototype) return nullptr;
 	
-	return pNode;
-};
-
-
-CTrieNodeBuild* CMorphAutomatBuilder::CloneNode(const CTrieNodeBuild* pPrototype) 
-{
-	// creating a clone
-	CTrieNodeBuild* N = CreateNode();
-	N->m_FirstChildNo = pPrototype->m_FirstChildNo;
-	N->m_SecondChildNo = pPrototype->m_SecondChildNo;
-	N->SetFinal( pPrototype->m_bFinal );
-	N->m_IncomingRelationsCount = 0;
-	N->m_bRegistered = false;
-
-	/// copying children and incrementing m_IncomingRelationsCount
-	for (size_t i=pPrototype->m_FirstChildNo; i < MaxAlphabetSize; i++)
-		if (pPrototype->m_Children[i])
-		{
-			N->m_Children[i] = pPrototype->m_Children[i];
-			pPrototype->m_Children[i]->m_IncomingRelationsCount++;
+	CTrieNodeBuild* clone = CreateNode();
+	clone->m_bFinal = pPrototype->m_bFinal;
+	clone->m_FirstChildNo = pPrototype->m_FirstChildNo;
+	clone->m_SecondChildNo = pPrototype->m_SecondChildNo;
+	
+	for (size_t i = 0; i < MaxAlphabetSize; i++) {
+		clone->m_Children[i] = pPrototype->m_Children[i];
+		if (clone->m_Children[i]) {
+			clone->m_Children[i]->m_IncomingRelationsCount++;
 		}
+	}
 	
-	return N;
-};
+	return clone;
+}
 
-
-void CMorphAutomatBuilder::ClearBuildNodes()
-{
-	if (m_pRoot)
-		DeleteNode(m_pRoot);
-
-	for (size_t i=0; i < m_DeletedNodes.size();i++)	
-		delete m_DeletedNodes[i];
-
+void CMorphAutomatBuilder::ClearBuildNodes() {
+	for (auto* node : m_NodePool) {
+		delete node;
+	}
+	m_NodePool.clear();
+	m_pRoot = nullptr;
+	m_Register.clear();
+	m_RegisterHash.clear();
+	m_Prefix.clear();
 	m_DeletedNodes.clear();
+}
 
-	m_pRoot = 0;
-};
-
-void CMorphAutomatBuilder::ClearRegister()
- {
-	for (size_t k=0; k < MaxAlphabetSize+1; k++)
-		for (size_t i=0; i<MaxAlphabetSize+1; i++)
-			m_RegisterHash[k][i].clear();
-
-	m_pRoot->UnregisterRecursive();
-	RegisterSize = 0;
-};
-
-void CMorphAutomatBuilder::InitTrie()
-{
+void CMorphAutomatBuilder::InitTrie() {
 	ClearBuildNodes();
 	m_pRoot = CreateNode();
-	ClearRegister();
-	
-};
+}
 
 void CMorphAutomatBuilder::UpdateCommonPrefix(const std::string& WordForm)
 {
@@ -311,121 +303,90 @@ int CMorphAutomatBuilder::GetFirstConfluenceState() const
 };
 
 
-CTrieRegister& CMorphAutomatBuilder::GetRegister(const CTrieNodeBuild* pNode)
-{
-	BYTE Register1 = MaxAlphabetSize;
-	BYTE Register2 = MaxAlphabetSize;
-
-	if (pNode->m_FirstChildNo !=  0xff)
-	{
-		Register1 = pNode->m_FirstChildNo;
-		
-		if (pNode->m_SecondChildNo !=  0xff)
-			Register2 = pNode->m_SecondChildNo;
+CTrieRegister& CMorphAutomatBuilder::GetRegister(const CTrieNodeBuild* pNode) {
+	if (pNode->m_FirstChildNo == 0xff) {
+		return m_Register;
 	}
-
-	return  m_RegisterHash[Register1][Register2];
-};
+	return m_RegisterHash[pNode->m_FirstChildNo][pNode->m_SecondChildNo];
+}
 
 
 
 CTrieNodeBuild* CMorphAutomatBuilder::ReplaceOrRegister(CTrieNodeBuild* pNode)
 {
-	CTrieRegister& Register = GetRegister(pNode);
-
-	CTrieRegister::const_iterator it = Register.find(pNode);
-	if (it != Register.end())
+	auto it = m_Register.find(pNode);
+	if(it != m_Register.end())
 	{
-		DeleteNode(pNode);
-		pNode  = *it;
-		assert (pNode->m_bRegistered);
-		assert (pNode->m_pRegister == it);
+		// Node already exists in register, use the registered version
+		CTrieNodeBuild* registeredNode = it->second;
+		if(pNode != registeredNode) {
+			DeleteNode(pNode);
+			pNode = registeredNode;
+		}
 	}
 	else
 	{
-		pNode->m_pRegister = Register.insert(pNode).first;
+		// New unique node, register it
+		m_Register[pNode] = pNode;
+		pNode->m_RegisteredNode = pNode;
 		pNode->m_bRegistered = true;
 		RegisterSize++;
 	}
-	
-	return  pNode;
-};
+	return pNode;
+}
 
 
 bool CheckRegisterOrder(const CTrieRegister& Register)
 {
-	const CTrieNodeBuild* pPrevNode = 0;
+	const CTrieNodeBuild* pPrevNode = nullptr;
 	IsLessRegister Less;
-	for (CTrieRegister::const_iterator it = Register.begin(); it != Register.end(); it++)
+	for (const auto& pair : Register)
 	{
-		const CTrieNodeBuild* pNode = *it;
+		const CTrieNodeBuild* pNode = pair.first;
 		if (pPrevNode)
 		{	
-			if (!Less(pPrevNode,pNode))
+			if (!Less(pPrevNode, pNode))
 			{
-				assert (Less(pPrevNode,pNode));
+				assert(Less(pPrevNode, pNode));
 				return false;
-			};
-			
-		};
+			}
+		}
 		pPrevNode = pNode;
-	};
+	}
 	return true;
 }
 
 bool CMorphAutomatBuilder::CheckRegister() const
 {
-	//printf ("Register size= %i\n",m_Register.size());
-	for (size_t k=0; k < MaxAlphabetSize + 1; k++)
-		for (size_t i=0; i<MaxAlphabetSize + 1; i++)
-		{
-			const CTrieRegister& Register =  m_RegisterHash[k][i];
-			if (!CheckRegisterOrder(Register)) return false;
-			
-			for (CTrieRegister::const_iterator it = Register.begin(); it != Register.end(); it++)
-			{
-				const CTrieNodeBuild* pNode = *it;
-						
-				if (pNode->m_bRegistered)
-				{
-					assert (pNode->m_pRegister == it);
-					if (pNode->m_pRegister != it)
-					return false;
-				};
-			};
-		};
+	if (!m_pRoot) return true;
 	
-	return m_pRoot->CheckRegisterRecursive();
-};
+	for (const auto& pair : m_Register) {
+		if (!pair.first->CheckRegisterRecursive()) {
+			return false;
+		}
+	}
+	return true;
+}
 
 
 bool CMorphAutomatBuilder::IsValid() const
 {
-	// en empty automat is OK
-	if (!m_pRoot)  return true;
-
-	// checking register
-	if (!CheckRegister())
-		return false;
-
-	// checking CTrieNodeBuild::m_IncomingRelationsCount
-	std::map<const CTrieNodeBuild*, size_t> Node2Incoming;
-	m_pRoot->GetIncomingRelationsCountRecursive(Node2Incoming);
-	if (!m_pRoot->CheckIncomingRelationsCountRecursive(Node2Incoming))
-		return false;
-
-	return true;
+	if (!m_pRoot) return false;
+	
+	std::map<const CTrieNodeBuild*, size_t> node2Incoming;
+	m_pRoot->GetIncomingRelationsCountRecursive(node2Incoming);
+	return m_pRoot->CheckIncomingRelationsCountRecursive(node2Incoming);
 };
 
 void CMorphAutomatBuilder::UnregisterNode(CTrieNodeBuild* pNode)
 {
-	if (pNode->m_bRegistered)
+	if(pNode->m_bRegistered)
 	{
 		pNode->m_bRegistered = false;
-		GetRegister(pNode).erase(pNode->m_pRegister);
-		RegisterSize --;
-	};
-};
+		m_Register.erase(pNode);
+		RegisterSize--;
+	}
+}
 
 // we do not register the parent node; we  register only the children
 CTrieNodeBuild* CMorphAutomatBuilder::AddSuffix(CTrieNodeBuild* pParentNodeNo, const char* WordForm)
@@ -471,91 +432,50 @@ void CMorphAutomatBuilder::AddStringDaciuk(const std::string& WordForm)
 
 	UpdateCommonPrefix(WordForm);
 
-	if	(		(m_Prefix.size() == WordForm.length()+1) 
-			&&	m_Prefix.back()->m_bFinal
-		)
+	if	(m_Prefix.size() == WordForm.length()+1 && m_Prefix.back()->m_bFinal)
 	{
-		// an equal std::string is already in the dictionary 
+		// String already exists
 		return;
 	};
 
 	CTrieNodeBuild*	pLastNode = m_Prefix.back();
-
 	int FirstConfluenceState = GetFirstConfluenceState();
+
 	if (FirstConfluenceState != -1) {
 		pLastNode = CloneNode(pLastNode);
 	}
-	else
-	{
-		// we should unregister Prefix.back() otherwize some node of suffix can be minimized to 
-		// Prefix.back()
+	else {
 		UnregisterNode(pLastNode);
-	};
+	}
 	
 	if (m_Prefix.size() == WordForm.length() + 1) {
 		pLastNode->SetFinal(true);
 	}
-	else
-	{
-		AddSuffix(pLastNode, WordForm.c_str()+m_Prefix.size()-1);
-		assert (!pLastNode->m_bRegistered);
+	else {
+		AddSuffix(pLastNode, WordForm.c_str() + m_Prefix.size() - 1);
 	}
 
-	// CurrentIndex is a pointer to prefix node, which was not yet registered
-	int  CurrentIndex = (int)m_Prefix.size() - 1;
-		
-	if (FirstConfluenceState != -1)
-	{	
-		FirstConfluenceState = GetFirstConfluenceState();
-
-
-		if (FirstConfluenceState != -1)
-			for (; CurrentIndex > FirstConfluenceState;  CurrentIndex--)
-			{
-				// clone the parent
-				CTrieNodeBuild*	pParent = CloneNode(m_Prefix[CurrentIndex-1]);
-
-				// register the child
-				pLastNode = ReplaceOrRegister(pLastNode);
-
-				// Modify the child of the parent
-				{
-					BYTE CharNo = m_Alphabet2Code[(BYTE)WordForm[CurrentIndex-1]];
-					pParent->ModifyChild(pLastNode, CharNo, true);
-				}
-
-				pLastNode = pParent;
-
-                FirstConfluenceState = GetFirstConfluenceState();
-				
-			};
-		
-	};
+	// Process nodes from bottom up
+	int CurrentIndex = m_Prefix.size() - 1;
 	
-	for (; CurrentIndex > 0; CurrentIndex--)
-	{
-		UnregisterNode(m_Prefix[CurrentIndex-1]);
-
-		CTrieNodeBuild*	pOldLastNode = pLastNode;
+	while(CurrentIndex > 0) {
+		CTrieNodeBuild* currentNode = m_Prefix[CurrentIndex-1];
+		UnregisterNode(currentNode);
 
 		pLastNode = ReplaceOrRegister(pLastNode);
 
-		if (pLastNode == m_Prefix[CurrentIndex])
-		{
-			ReplaceOrRegister(m_Prefix[CurrentIndex-1]);
+		if(pLastNode == m_Prefix[CurrentIndex]) {
+			ReplaceOrRegister(currentNode);
 			break;
-		};
-		
-		// if pOldLastNode==pLastNode then it is the first iteration of the cycle
-		// and the current cycle is the only confluence state on the path to the root automat.
-		// If a state is confluent, then we should update CTrieNodeBuild::m_IncomingRelationsCount
-		// otherwise it leads to the error, since we have just deleted the old child
-		BYTE CharNo = m_Alphabet2Code[(BYTE)WordForm[CurrentIndex-1]];
-		m_Prefix[CurrentIndex-1]->ModifyChild(pLastNode, CharNo, FirstConfluenceState==CurrentIndex);
+		}
 
-		pLastNode = m_Prefix[CurrentIndex-1];
+		BYTE CharNo = m_Alphabet2Code[(BYTE)WordForm[CurrentIndex-1]];
+		bool updateIncoming = FirstConfluenceState == CurrentIndex;
+		currentNode->ModifyChild(pLastNode, CharNo, updateIncoming);
 		
-	};
+		pLastNode = currentNode;
+		CurrentIndex--;
+	}
 };
 
 
@@ -624,4 +544,13 @@ void CMorphAutomatBuilder::ConvertBuildRelationsToRelations()
 	copy(Relations.begin(), Relations.end(), m_pRelations);
 
 };
+
+void CMorphAutomatBuilder::ClearRegister() {
+    m_Register.clear();
+    m_RegisterHash.clear();
+    if (m_pRoot) {
+        m_pRoot->UnregisterRecursive();
+    }
+    RegisterSize = 0;
+}
 

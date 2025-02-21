@@ -1,6 +1,6 @@
 #pragma once
-#include <plog/Appenders/IAppender.h>
-#include <plog/Util.h>
+#include <C:\RML\Source\morph_dict\contrib\plog\plog/Appenders/IAppender.h>
+#include <C:\RML\Source\morph_dict\contrib\plog\plog/Util.h>
 #include <vector>
 
 #ifdef PLOG_DEFAULT_INSTANCE // for backward compatibility

@@ -1,4 +1,4 @@
-declare_cmake_min_version()
+cmake_minimum_required(VERSION 3.0)
 
 project(test_morph_gen)
 

@@ -1,9 +1,9 @@
-#include "morph_dict/lemmatizer_base_lib/Predict.h"
-#include "morph_dict/morph_wizard/wizard.h"
-#include "morph_dict/lemmatizer_base_lib/MorphDictBuilder.h"
-#include "morph_dict/lemmatizer_base_lib/Lemmatizers.h"
+#include "C:\RML\Source\morph_dict/lemmatizer_base_lib/Predict.h"
+#include "C:\RML\Source\morph_dict/morph_wizard/wizard.h"
+#include "C:\RML\Source\morph_dict/lemmatizer_base_lib/MorphDictBuilder.h"
+#include "C:\RML\Source\morph_dict/lemmatizer_base_lib/Lemmatizers.h"
 
-#include "morph_dict/common/argparse.h"
+#include "C:\RML\Source\morph_dict/common/argparse.h"
 
 void PrintUsage()
 {

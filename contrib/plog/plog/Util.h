@@ -60,7 +60,7 @@
 #endif
 
 #ifdef _WIN32
-#   include <plog/WinApi.h>
+#   include <C:\RML\Source\morph_dict\contrib\plog\plog/WinApi.h>
 #   include <time.h>
 #   include <sys/timeb.h>
 #   include <io.h>

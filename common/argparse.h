@@ -10,7 +10,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <fstream>
-#include <plog/Log.h>
+#include <C:\RML\Source\morph_dict\contrib\plog\plog/Log.h>
 
 class ArgumentParser {
 private:

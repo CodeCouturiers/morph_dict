@@ -1,6 +1,6 @@
 #pragma once
-#include <plog/Record.h>
-#include <plog/Util.h>
+#include <C:\RML\Source\morph_dict\contrib\plog\plog/Record.h>
+#include <C:\RML\Source\morph_dict\contrib\plog\plog/Util.h>
 
 namespace plog
 {

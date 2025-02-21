@@ -20,7 +20,7 @@
 #include <cstring>
 #include <unordered_set>
 #include <limits>
-#include <plog/Log.h>
+#include <C:\RML\Source\morph_dict\contrib\plog\plog/Log.h>
 #include <filesystem>
 #include <cwctype>
 #include <cstdint>

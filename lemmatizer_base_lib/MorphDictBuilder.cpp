@@ -3,6 +3,7 @@
 // ==========  Copyright by Alexey Sokirko (2004)
 
 #include "MorphDictBuilder.h"
+#include "MorphAutomBuilder.h"
 #include "Lemmatizers.h"
 #include "fstream"
 #include <chrono>
@@ -22,6 +23,11 @@ CMorphDictBuilder::CMorphDictBuilder()
 CMorphDictBuilder::~CMorphDictBuilder() 
 {
 };
+
+CMorphAutomatBuilder* CMorphDictBuilder::GetFormBuilder() 
+{ 
+    return (CMorphAutomatBuilder*)m_pFormAutomat; 
+}
 
 void CMorphDictBuilder::GenerateLemmas(const MorphoWizard& Wizard) 
 {
@@ -187,6 +193,24 @@ void  CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 	GetFormBuilder()->InitTrie();
 	m_AccentModels = Wizard.m_AccentModels;
 	GeneratePrefixes(Wizard);
+	
+	// Pre-calculate total forms for better memory allocation
+	size_t totalForms = 0;
+	for(const_lemma_iterator_t it = Wizard.m_LemmaToParadigm.begin(); it != Wizard.m_LemmaToParadigm.end(); it++) {
+		size_t ModelNo = it->second.m_FlexiaModelNo;
+		const CFlexiaModel& p = Wizard.m_FlexiaModels[ModelNo];
+		const std::vector<bool>& Infos = m_ModelInfo[ModelNo];
+		size_t prefixCount = (it->second.m_PrefixSetNo != UnknownPrefixSetNo) ? 
+			m_PrefixSets[it->second.m_PrefixSetNo].size() : 1;
+		
+		for(size_t i = 0; i < p.m_Flexia.size(); i++) {
+			if(Infos[i]) totalForms += prefixCount;
+		}
+	}
+
+	// Reserve space for better performance
+	GetFormBuilder()->ReserveSpace(totalForms);
+
 	// Creating tries for paradigms
 	size_t RuleNo = 0; 
 	size_t LemmaNo = 0;
@@ -199,8 +223,13 @@ void  CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 	auto start_time = std::chrono::steady_clock::now();
 	auto last_update = start_time;
 	const auto update_interval = std::chrono::seconds(1);
+
+	// Process lemmas in batches to reduce register pressure
+	const size_t BATCH_SIZE = 1000;
+	std::vector<std::string> wordFormBatch;
+	wordFormBatch.reserve(BATCH_SIZE * 2); // Reserve extra space for variations
 	
-	for( const_lemma_iterator_t it=Wizard.m_LemmaToParadigm.begin(); it!=Wizard.m_LemmaToParadigm.end(); it++ )
+	for(const_lemma_iterator_t it = Wizard.m_LemmaToParadigm.begin(); it != Wizard.m_LemmaToParadigm.end(); it++)
 	{
 		if (!(LemmaNo % 3000)) {
 			auto current_time = std::chrono::steady_clock::now();
@@ -231,11 +260,11 @@ void  CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 		const CFlexiaModel&p = Wizard.m_FlexiaModels[ModelNo];
 		const std::vector <bool>& Infos = m_ModelInfo[ModelNo];
 		
-		for (size_t PrefixNo = 0; PrefixNo < pPrefixVector->size();PrefixNo++)
+		for (size_t PrefixNo = 0; PrefixNo < pPrefixVector->size(); PrefixNo++)
 		{
-			std::string base  = Wizard.get_base_string(it);
+			std::string base = Wizard.get_base_string(it);
 			
-			for (size_t ItemNo=0; ItemNo <p.m_Flexia.size(); ItemNo++)
+			for (size_t ItemNo = 0; ItemNo < p.m_Flexia.size(); ItemNo++)
 			if (Infos[ItemNo])
 			{
 				std::string WordForm = m_Prefixes[(*pPrefixVector)[PrefixNo]];
@@ -246,7 +275,7 @@ void  CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 				WordForm += GetFormBuilder()->m_AnnotChar;
 				{
 					FormsCount++;
-					uint32_t info = 	GetFormBuilder()->EncodeMorphAutomatInfo(ModelNo, ItemNo, (*pPrefixVector)[PrefixNo]);
+					uint32_t info = GetFormBuilder()->EncodeMorphAutomatInfo(ModelNo, ItemNo, (*pPrefixVector)[PrefixNo]);
 
 					{	// checking encoding
 						size_t checkModelNo, checkItemNo,checkPrefixNo;
@@ -259,17 +288,28 @@ void  CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 						{
 							throw CExpc ("General annotation encoding error!");
 						};
-
 					};
 
-					WordForm += GetFormBuilder()->EncodeIntToAlphabet(info);	
-				};
-				
-				GetFormBuilder()->AddStringDaciuk(WordForm);
-			};
-		};
+					WordForm += GetFormBuilder()->EncodeIntToAlphabet(info);
+					wordFormBatch.push_back(std::move(WordForm));
+				}
+
+				// Process batch if full
+				if(wordFormBatch.size() >= BATCH_SIZE) {
+					for(const auto& form : wordFormBatch) {
+						GetFormBuilder()->AddStringDaciuk(form);
+					}
+					wordFormBatch.clear();
+				}
+			}
+		}
 		LemmaNo++;
-	};
+	}
+
+	// Process remaining forms in the last batch
+	for(const auto& form : wordFormBatch) {
+		GetFormBuilder()->AddStringDaciuk(form);
+	}
 
 	auto end_time = std::chrono::steady_clock::now();
 	double total_time = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
@@ -288,7 +328,7 @@ void  CMorphDictBuilder::CreateAutomat(const MorphoWizard& Wizard)
 	GetFormBuilder()->ClearRegister();
 	fprintf(stderr, "ConvertBuildRelationsToRelations for word forms...  \n");
 	GetFormBuilder()->ConvertBuildRelationsToRelations();
-};
+}
 
 void create_options(CJsonObject& opts, bool allow_russian_jo, int postfix_len, int min_freq) {
 	opts.add_bool("AllowRussianJo", allow_russian_jo);

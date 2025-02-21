@@ -4,7 +4,7 @@
 //  License: MIT, https://choosealicense.com/licenses/mit
 
 #pragma once
-#include <plog/Logger.h>
+#include <C:\RML\Source\morph_dict\contrib\plog\plog/Logger.h>
 
 //////////////////////////////////////////////////////////////////////////
 // Helper macros that get context info

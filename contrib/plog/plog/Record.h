@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdarg>
-#include <plog/Severity.h>
-#include <plog/Util.h>
+#include <C:\RML\Source\morph_dict\contrib\plog\plog/Severity.h>
+#include <C:\RML\Source\morph_dict\contrib\plog\plog/Util.h>
 
 #ifdef __cplusplus_cli
 #include <vcclr.h>  // For PtrToStringChars

@@ -1,9 +1,9 @@
-#include "morph_dict/common/utilit.h"
-#include "morph_dict/lemmatizer_base_lib/MorphanHolder.h"
-#include "morph_dict/lemmatizer_base_lib/MorphDictBuilder.h"
-#include "morph_dict/lemmatizer_base_lib/Paradigm.h"
-#include "morph_dict/morph_wizard/flexia_model.h"
-#include "morph_dict/lemmatizer_base_lib/Lemmatizers.h"
+#include "C:\RML\Source\morph_dict/common/utilit.h"
+#include "C:\RML\Source\morph_dict/lemmatizer_base_lib/MorphanHolder.h"
+#include "C:\RML\Source\morph_dict/lemmatizer_base_lib/MorphDictBuilder.h"
+#include "C:\RML\Source\morph_dict/lemmatizer_base_lib/Paradigm.h"
+#include "C:\RML\Source\morph_dict/morph_wizard/flexia_model.h"
+#include "C:\RML\Source\morph_dict/lemmatizer_base_lib/Lemmatizers.h"
 
 #define DOCTEST_CONFIG_IMPLEMENT
 #include "morph_dict/contrib/doctest/doctest.h"
