@@ -6,6 +6,7 @@
 // The load time of morphology dictionaries is important.
 
 #include "MorphAutomat.h"
+#include <stack>
 
 static int  InitAlphabet(MorphLanguageEnum Language, int* pCode2Alphabet, int* pAlphabet2Code, size_t AnnotChar)
 {
@@ -269,14 +270,12 @@ void CMorphAutomat::Save(std::string AutomatFileName) const
 };
 
 
-size_t  CMorphAutomat::GetChildrenCount(size_t NodeNo)  const
-{
+size_t CMorphAutomat::GetChildrenCount(size_t NodeNo) const {
 	if (NodeNo + 1 == m_NodesCount)
 		return m_RelationsCount - m_pNodes[NodeNo].GetChildrenStart();
 	else
 		return m_pNodes[NodeNo + 1].GetChildrenStart() - m_pNodes[NodeNo].GetChildrenStart();
-
-};
+}
 
 
 const CMorphAutomRelation* CMorphAutomat::GetChildren(size_t NodeNo) const
@@ -353,34 +352,69 @@ std::string	CMorphAutomat::GetFirstResult(const std::string& Text) const
 	return res;
 };
 
-void	CMorphAutomat::GetAllMorphInterpsRecursive(int NodeNo, std::string& curr_path, std::vector<CAutomAnnotationInner>& Infos) const
-{
-	const CMorphAutomNode& N = m_pNodes[NodeNo];
-	if (N.IsFinal())
-	{
-		CAutomAnnotationInner A;
-		uint32_t i = DecodeFromAlphabet(curr_path);
-		size_t ItemNo;
-		size_t ModelNo;
-		size_t PrefixNo;
-		DecodeMorphAutomatInfo(i, ModelNo, ItemNo, PrefixNo);
-		A.m_ItemNo = (uint16_t)ItemNo;
-		A.m_ModelNo = (uint16_t)ModelNo;
-		A.m_PrefixNo = (uint16_t)PrefixNo;
-		Infos.push_back(A);
-	};
+void CMorphAutomat::GetAllMorphInterpsRecursive(int NodeNo, std::string& curr_path, std::vector<CAutomAnnotationInner>& Infos) const {
+    // Pre-allocate buffers to avoid reallocations
+    const size_t MAX_DEPTH = 64; // Maximum depth of traversal
+    struct NodeState {
+        int node;
+        const CMorphAutomRelation* curr_relation;
+        const CMorphAutomRelation* end_relation;
+        size_t path_len;
+    };
+    
+    // Stack-based buffer for node states
+    NodeState state_buffer[MAX_DEPTH];
+    size_t depth = 0;
 
-	size_t Count = GetChildrenCount(NodeNo);
-	size_t CurrPathSize = curr_path.size();
-	curr_path.resize(CurrPathSize + 1);
-	for (size_t i = 0; i < Count; i++)
-	{
-		const CMorphAutomRelation& p = GetChildren(NodeNo)[i];
-		curr_path[CurrPathSize] = p.GetRelationalChar();
-		GetAllMorphInterpsRecursive(p.GetChildNo(), curr_path, Infos);
-	};
-	curr_path.resize(CurrPathSize);
-};
+    // Initialize first state
+    NodeState& initial_state = state_buffer[0];
+    initial_state.node = NodeNo;
+    initial_state.curr_relation = GetChildren(NodeNo);
+    initial_state.end_relation = initial_state.curr_relation + GetChildrenCount(NodeNo);
+    initial_state.path_len = curr_path.length();
+    
+    while (depth < MAX_DEPTH) {
+        NodeState& current = state_buffer[depth];
+        
+        // Process current node if it's final
+        if (m_pNodes[current.node].IsFinal()) {
+            CAutomAnnotationInner A;
+            uint32_t i = DecodeFromAlphabet(curr_path);
+            size_t ItemNo, ModelNo, PrefixNo;
+            DecodeMorphAutomatInfo(i, ModelNo, ItemNo, PrefixNo);
+            A.m_ItemNo = (uint16_t)ItemNo;
+            A.m_ModelNo = (uint16_t)ModelNo;
+            A.m_PrefixNo = (uint16_t)PrefixNo;
+            Infos.push_back(A);
+        }
+        
+        // Try to go deeper if there are unprocessed relations
+        if (current.curr_relation < current.end_relation) {
+            // Get next child
+            const CMorphAutomRelation& rel = *current.curr_relation;
+            current.curr_relation++;
+            
+            // Add character to path
+            curr_path.push_back(rel.GetRelationalChar());
+            
+            // Setup next level
+            depth++;
+            if (depth < MAX_DEPTH) {
+                NodeState& next = state_buffer[depth];
+                next.node = rel.GetChildNo();
+                next.curr_relation = GetChildren(next.node);
+                next.end_relation = next.curr_relation + GetChildrenCount(next.node);
+                next.path_len = curr_path.length();
+            }
+        }
+        // No more children at this level, go back up
+        else {
+            curr_path.resize(current.path_len);
+            if (depth == 0) break;
+            depth--;
+        }
+    }
+}
 
 int	CMorphAutomat::FindStringAndPassAnnotChar(const std::string& Text, size_t TextPos) const
 {

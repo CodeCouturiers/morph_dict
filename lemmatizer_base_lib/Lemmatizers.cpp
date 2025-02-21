@@ -75,68 +75,79 @@ bool CLemmatizer::IsPrefix(const std::string& Prefix) const
 // the word was found in the dictionary, if it was predicted, then it returns false
 bool CLemmatizer::LemmatizeWord(std::string& word_str, const bool cap, const bool predict, std::vector<CAutomAnnotationInner>& results, bool bGetLemmaInfos) const
 {
-	RmlMakeUpper (word_str, GetLanguage());
+	RmlMakeUpper(word_str, GetLanguage());
 
-	size_t WordOffset = 0;
-	
-
+	results.clear(); // Clear results at the start
 	m_pFormAutomat->GetInnerMorphInfos(word_str, 0, results);
-
-	bool bResult = !results.empty();
-
-	if (results.empty())
-	{
-		if (predict)
-		{
-			PredictBySuffix(word_str, WordOffset, 4, results); // the length of the minal suffix is 4 
-
-
-			if (word_str[WordOffset-1] != '-') //  and there is no hyphen
-			{
-				size_t  KnownPostfixLen = word_str.length() - WordOffset;
-				size_t  UnknownPrefixLen = WordOffset;
-				if (KnownPostfixLen < 6)// if  the known part is too short
-					//if	(UnknownPrefixLen > 5)// no prediction if unknown prefix is more than 5
-					{
-						if (!IsPrefix(word_str.substr(0, UnknownPrefixLen)))
-							results.clear();
-					};
-			};
-
-			// отменяем предсказание по местоимениям, например _R("Семыкиным")
-			for (size_t i=0; i<results.size(); i++)
-				if (!m_ProductiveModels[results[i].m_ModelNo])
-				{
-					results.clear();
-					break;
-				};
-
-		};
-	};
-
-	if (!results.empty())
-	{
-		if (bGetLemmaInfos)
-			GetLemmaInfos(word_str, WordOffset, results);
+	
+	if (!results.empty()) {
+		if (bGetLemmaInfos) {
+			GetLemmaInfos(word_str, 0, results);
+		}
+		return true;
 	}
-	else
-		if (predict)
-		{
-			PredictByDataBase(word_str, results,cap);
-			for (int i=(int)results.size()-1; i>=0; i--)
-			{
-					const CAutomAnnotationInner& A = results[i];
-					const CLemmaInfo& I = m_LemmaInfos[A.m_LemmaInfoNo].m_LemmaInfo;
-					const CFlexiaModel& M = m_FlexiaModels[A.m_ModelNo];
-					const CMorphForm& F = M.m_Flexia[A.m_ItemNo];
-					if ( F.m_FlexiaStr.length() >= word_str.length() )
-					{
-						results.erase(results.begin() + i);
-					}
-			}
-		};
 
-	return bResult;
+	if (!predict) {
+		return false;
+	}
+
+	// Prediction path
+	size_t WordOffset = 0;
+	PredictBySuffix(word_str, WordOffset, 4, results);
+
+	if (results.empty()) {
+		PredictByDataBase(word_str, results, cap);
+		if (!results.empty()) {
+			// Filter out invalid predictions
+			size_t validCount = 0;
+			for (size_t i = 0; i < results.size(); i++) {
+				const CAutomAnnotationInner& A = results[i];
+				const CLemmaInfo& I = m_LemmaInfos[A.m_LemmaInfoNo].m_LemmaInfo;
+				const CFlexiaModel& M = m_FlexiaModels[A.m_ModelNo];
+				const CMorphForm& F = M.m_Flexia[A.m_ItemNo];
+				
+				if (F.m_FlexiaStr.length() < word_str.length()) {
+					if (validCount != i) {
+						results[validCount] = results[i];
+					}
+					validCount++;
+				}
+			}
+			results.resize(validCount);
+		}
+		return false;
+	}
+
+	// Check if we need to clear predictions
+	if (word_str[WordOffset-1] != '-' && // no hyphen
+		word_str.length() - WordOffset < 6) { // known part is too short
+		std::string prefix = word_str.substr(0, WordOffset);
+		if (!IsPrefix(prefix)) {
+			results.clear();
+			return false;
+		}
+	}
+
+	// Filter out non-productive models
+	const size_t productiveModelsSize = m_ProductiveModels.size();
+	size_t validCount = 0;
+	for (size_t i = 0; i < results.size(); i++) {
+		if (results[i].m_ModelNo >= productiveModelsSize || 
+			!m_ProductiveModels[results[i].m_ModelNo]) {
+			continue;
+		}
+		if (validCount != i) {
+			results[validCount] = results[i];
+		}
+		validCount++;
+	}
+	results.resize(validCount);
+
+	if (!results.empty() && bGetLemmaInfos) {
+		GetLemmaInfos(word_str, WordOffset, results);
+	}
+
+	return false;
 }
 
 bool CLemmatizer::GetAllAncodesAndLemmasQuick(std::string& word_str, bool capital, char* OutBuffer, size_t MaxBufferSize, bool bUsePrediction) const
