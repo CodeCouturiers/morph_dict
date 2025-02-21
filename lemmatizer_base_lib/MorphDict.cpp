@@ -36,37 +36,91 @@ void CMorphDict::InitAutomat(CMorphAutomat* pFormAutomat)
 
 void    CMorphDict::GetLemmaInfos(const std::string& Text, size_t TextPos, std::vector<CAutomAnnotationInner>& Infos) const
 {
+	OutputDebugStringA("\n[GetLemmaInfos] Starting lemma info processing\n");
+	OutputDebugStringA(Format("[GetLemmaInfos] Input text: '%s', TextPos: %zu, Infos size: %zu\n", 
+		Text.c_str(), TextPos, Infos.size()).c_str());
+
 	const size_t textLength = Text.length();
 	std::vector<CAutomAnnotationInner> additInfos;
+
 	for (CAutomAnnotationInner& annot : Infos)
 	{
+		OutputDebugStringA(Format("[GetLemmaInfos] Processing annotation - ModelNo: %d, ItemNo: %d, PrefixNo: %d\n",
+			annot.m_ModelNo, annot.m_ItemNo, annot.m_PrefixNo).c_str());
+
+		if (annot.m_ModelNo >= m_FlexiaModels.size()) {
+			OutputDebugStringA(Format("[GetLemmaInfos] ERROR: Invalid model number %d >= %zu\n", 
+				annot.m_ModelNo, m_FlexiaModels.size()).c_str());
+			continue;
+		}
+
 		const CFlexiaModel& F = m_FlexiaModels[annot.m_ModelNo];
 		const CMorphForm& M = F.m_Flexia[annot.m_ItemNo];
+		
+		if (annot.m_PrefixNo >= m_Prefixes.size()) {
+			OutputDebugStringA(Format("[GetLemmaInfos] ERROR: Invalid prefix number %d >= %zu\n", 
+				annot.m_PrefixNo, m_Prefixes.size()).c_str());
+			continue;
+		}
+
 		size_t textStartPos = TextPos + m_Prefixes[annot.m_PrefixNo].length() + M.m_PrefixStr.length();
 		std::string Base = m_Prefixes[annot.m_PrefixNo] + Text.substr(textStartPos, textLength - textStartPos - M.m_FlexiaStr.length());
+		
+		OutputDebugStringA(Format("[GetLemmaInfos] Calculated base: '%s'\n", Base.c_str()).c_str());
+
+		if (annot.m_ModelNo >= m_ModelsIndex.size() - 1) {
+			OutputDebugStringA(Format("[GetLemmaInfos] ERROR: Model index out of bounds %d >= %zu\n", 
+				annot.m_ModelNo, m_ModelsIndex.size() - 1).c_str());
+			continue;
+		}
 
 		auto start = m_LemmaInfos.begin() + m_ModelsIndex[annot.m_ModelNo];
 		auto end = m_LemmaInfos.begin() + m_ModelsIndex[annot.m_ModelNo + 1];
 
+		OutputDebugStringA(Format("[GetLemmaInfos] Searching in range: %zd to %zd (total size: %zu)\n",
+			m_ModelsIndex[annot.m_ModelNo], m_ModelsIndex[annot.m_ModelNo + 1], m_LemmaInfos.size()).c_str());
+
+		if (start > end || end > m_LemmaInfos.end()) {
+			OutputDebugStringA("[GetLemmaInfos] ERROR: Invalid iterator range\n");
+			continue;
+		}
+
 		auto pair_it = equal_range(start, end, Base.c_str(), m_SearchInfoLess);
-		size_t size = pair_it.second - pair_it.first;
-
-		assert(pair_it.first != m_LemmaInfos.end());
-		{
-			int LemmaStrNo = pair_it.first->m_LemmaStrNo;
-			assert(Base == m_Bases[LemmaStrNo].GetString());
-		}
 		
-		annot.m_LemmaInfoNo = pair_it.first - m_LemmaInfos.begin();
-
-		for (decltype(pair_it.first) it = pair_it.first + 1; it != pair_it.second; ++it) {
-			CAutomAnnotationInner new_annot = annot;
-			annot.m_LemmaInfoNo = it - m_LemmaInfos.begin();
-			additInfos.emplace_back(new_annot);
+		if (pair_it.first == m_LemmaInfos.end()) {
+			OutputDebugStringA("[GetLemmaInfos] No matches found for base\n");
+			continue;
 		}
 
-	};
+		if (pair_it.first >= pair_it.second) {
+			OutputDebugStringA("[GetLemmaInfos] WARNING: Empty range returned by equal_range\n");
+			continue;
+		}
+
+		size_t firstPos = pair_it.first - m_LemmaInfos.begin();
+		size_t secondPos = pair_it.second - m_LemmaInfos.begin();
+		OutputDebugStringA(Format("[GetLemmaInfos] Found range: %zu to %zu\n", firstPos, secondPos).c_str());
+
+		// Set the first match
+		annot.m_LemmaInfoNo = firstPos;
+		OutputDebugStringA(Format("[GetLemmaInfos] Set first match LemmaInfoNo: %d\n", annot.m_LemmaInfoNo).c_str());
+
+		// Add additional homonyms
+		size_t homonymCount = 0;
+		for (auto it = pair_it.first + 1; it != pair_it.second; ++it) {
+			CAutomAnnotationInner new_annot = annot;
+			new_annot.m_LemmaInfoNo = it - m_LemmaInfos.begin();
+			additInfos.emplace_back(new_annot);
+			homonymCount++;
+		}
+		OutputDebugStringA(Format("[GetLemmaInfos] Added %zu additional homonyms\n", homonymCount).c_str());
+	}
+
+	size_t oldSize = Infos.size();
 	Infos.insert(Infos.end(), additInfos.begin(), additInfos.end());
+	OutputDebugStringA(Format("[GetLemmaInfos] Final results - Original size: %zu, Added: %zu, Total: %zu\n", 
+		oldSize, additInfos.size(), Infos.size()).c_str());
+	OutputDebugStringA("[GetLemmaInfos] Completed successfully\n");
 };
 
 
