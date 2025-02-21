@@ -7,6 +7,8 @@
 #include <fstream>
 #include <iostream>
 #include <filesystem>
+#include <Windows.h>
+#include <debugapi.h>
 
 namespace fs = std::filesystem;
 
@@ -150,23 +152,34 @@ static size_t getCount(std::ifstream& mrdFile, const char* sectionName) {
 void CMorphDict::Load(std::string GrammarFileName)
 {
     try {
+        OutputDebugStringA("\n[MorphDict] Starting to load dictionary...\n");
+        OutputDebugStringA(Format("[MorphDict] Loading file: %s\n", GrammarFileName.c_str()).c_str());
+
         // First read the main morph.bin file
         std::ifstream mainFile(GrammarFileName, std::ios::binary);
         if (!mainFile.is_open()) {
+            OutputDebugStringA(Format("[MorphDict] ERROR: Cannot open %s\n", GrammarFileName.c_str()).c_str());
             throw CExpc(Format("Cannot open %s", GrammarFileName.c_str()));
         }
+        OutputDebugStringA("[MorphDict] Successfully opened morph.bin\n");
 
         // Read and verify version
         uint32_t version;
         mainFile.read((char*)&version, sizeof(version));
+        OutputDebugStringA(Format("[MorphDict] Read version: %u\n", version).c_str());
         if (version != 1) {
+            OutputDebugStringA(Format("[MorphDict] ERROR: Invalid version: %u\n", version).c_str());
             throw CExpc(Format("Invalid morph.bin version: %u", version));
         }
 
         // Read language
         MorphLanguageEnum fileLanguage;
         mainFile.read((char*)&fileLanguage, sizeof(fileLanguage));
+        OutputDebugStringA(Format("[MorphDict] Read language: %s\n", GetStringByLanguage(fileLanguage).c_str()).c_str());
         if (fileLanguage != m_Language) {
+            OutputDebugStringA(Format("[MorphDict] ERROR: Language mismatch. Expected %s, got %s\n", 
+                GetStringByLanguage(m_Language).c_str(),
+                GetStringByLanguage(fileLanguage).c_str()).c_str());
             throw CExpc(Format("Language mismatch in %s: expected %s, got %s", 
                 GrammarFileName.c_str(),
                 GetStringByLanguage(m_Language).c_str(),
@@ -186,83 +199,110 @@ void CMorphDict::Load(std::string GrammarFileName)
         std::string annotPath = readPath();
         std::string basesPath = readPath();
 
+        OutputDebugStringA(Format("[MorphDict] Read paths:\n  forms: %s\n  annot: %s\n  bases: %s\n", 
+            formsPath.c_str(), annotPath.c_str(), basesPath.c_str()).c_str());
+
         mainFile.close();
 
         // Get the directory containing morph.bin
         fs::path baseDir = fs::path(GrammarFileName).parent_path();
+        OutputDebugStringA(Format("[MorphDict] Base directory: %s\n", baseDir.string().c_str()).c_str());
 
         // Load forms automaton
         std::string formsFile = (baseDir / formsPath).string();
-        std::cout << "Loading forms automaton from " << formsFile << std::endl;
+        OutputDebugStringA(Format("[MorphDict] Loading forms automaton from %s\n", formsFile.c_str()).c_str());
         m_pFormAutomat->Load(formsFile);
+        OutputDebugStringA("[MorphDict] Forms automaton loaded successfully\n");
 
         // Load annotations
         std::string annotFile = (baseDir / annotPath).string();
-        std::cout << "Loading annotations from " << annotFile << std::endl;
+        OutputDebugStringA(Format("[MorphDict] Loading annotations from %s\n", annotFile.c_str()).c_str());
         std::ifstream annotStream(annotFile, std::ios::binary);
         if (!annotStream.is_open()) {
+            OutputDebugStringA(Format("[MorphDict] ERROR: Cannot open annotations file %s\n", annotFile.c_str()).c_str());
             throw CExpc(Format("Cannot open %s", annotFile.c_str()));
         }
 
-        {
+        try {
+            // Load flexia models
             m_FlexiaModels.clear();
             size_t count = getCount(annotStream, "flexia models");
-            std::string l;
+            OutputDebugStringA(Format("[MorphDict] Loading %zu flexia models\n", count).c_str());
+            std::string line;
             for (size_t i = 0; i < count; ++i) {
-                if (!getline(annotStream, l)) throw CExpc("cannot read flexia models");
-                m_FlexiaModels.emplace_back(CFlexiaModel().FromString(l));
+                if (!getline(annotStream, line)) {
+                    OutputDebugStringA("[MorphDict] ERROR: Cannot read flexia models\n");
+                    throw CExpc("Cannot read flexia models");
+                }
+                m_FlexiaModels.emplace_back(CFlexiaModel().FromString(line));
             }
-        }
+            OutputDebugStringA("[MorphDict] Flexia models loaded successfully\n");
 
-        {
-            size_t count = getCount(annotStream, "accent models");
-            std::string l;
+            // Load accent models
+            count = getCount(annotStream, "accent models");
+            OutputDebugStringA(Format("[MorphDict] Loading %zu accent models\n", count).c_str());
             for (size_t i = 0; i < count; ++i) {
-                std::getline(annotStream, l);
-                m_AccentModels.emplace_back(CAccentModel().FromString(l));
+                std::getline(annotStream, line);
+                m_AccentModels.emplace_back(CAccentModel().FromString(line));
             }
-        }
+            OutputDebugStringA("[MorphDict] Accent models loaded successfully\n");
 
-        {
-            size_t count = getCount(annotStream, "prefix sets");
+            // Load prefix sets
+            count = getCount(annotStream, "prefix sets");
+            OutputDebugStringA(Format("[MorphDict] Loading %zu prefix sets\n", count).c_str());
             m_Prefixes.resize(1, "");
             for (size_t num = 0; num < count; num++) {
-                std::string q;
-                if (!getline(annotStream, q)) throw CExpc("cannot read annots");
-                Trim(q);
-                assert(!q.empty());
-                m_Prefixes.push_back(q);
+                if (!getline(annotStream, line)) {
+                    OutputDebugStringA("[MorphDict] ERROR: Cannot read prefix sets\n");
+                    throw CExpc("Cannot read prefix sets");
+                }
+                Trim(line);
+                assert(!line.empty());
+                m_Prefixes.push_back(line);
             }
-        }
+            OutputDebugStringA("[MorphDict] Prefix sets loaded successfully\n");
 
-        {
-            size_t count = getCount(annotStream, "lemma infos");
+            // Load lemma infos
+            count = getCount(annotStream, "lemma infos");
+            OutputDebugStringA(Format("[MorphDict] Loading %zu lemma infos\n", count).c_str());
             m_LemmaInfos.clear();
             ReadVectorInner(annotStream, m_LemmaInfos, count);
-        }
+            OutputDebugStringA("[MorphDict] Lemma infos loaded successfully\n");
 
-        {
-            size_t count = getCount(annotStream, "nps infos");
+            // Load productive models
+            count = getCount(annotStream, "nps infos");
+            OutputDebugStringA(Format("[MorphDict] Loading %zu productive models\n", count).c_str());
             m_ProductiveModels.clear();
             ReadVectorInner(annotStream, m_ProductiveModels, count);
             assert(m_ProductiveModels.size() == m_FlexiaModels.size());
-        }
+            OutputDebugStringA("[MorphDict] Productive models loaded successfully\n");
 
-        annotStream.close();
+            annotStream.close();
+        }
+        catch (const std::exception& e) {
+            OutputDebugStringA(Format("[MorphDict] ERROR while reading annotations: %s\n", e.what()).c_str());
+            throw;
+        }
 
         // Load bases
         std::string basesFile = (baseDir / basesPath).string();
-        std::cout << "Loading bases from " << basesFile << std::endl;
+        OutputDebugStringA(Format("[MorphDict] Loading bases from %s\n", basesFile.c_str()).c_str());
         m_Bases.ReadShortStringHolder(basesFile);
+        OutputDebugStringA("[MorphDict] Bases loaded successfully\n");
 
         CreateModelsIndex();
-        std::cout << "Morphological dictionary loaded successfully" << std::endl;
+        OutputDebugStringA("[MorphDict] Models index created\n");
+        OutputDebugStringA("[MorphDict] Dictionary loaded successfully\n");
     }
     catch (const std::exception& e) {
-        std::cerr << "Error loading morphological dictionary: " << e.what() << std::endl;
+        OutputDebugStringA(Format("[MorphDict] FATAL ERROR: %s\n", e.what()).c_str());
         throw;
     }
-}
+    catch (...) {
+        OutputDebugStringA("[MorphDict] FATAL ERROR: Unknown exception\n");
+        throw;
+    }
+};
 
 void CMorphDict::Save(std::string GrammarFileName) const
 {
