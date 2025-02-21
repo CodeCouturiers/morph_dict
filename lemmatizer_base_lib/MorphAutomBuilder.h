@@ -15,9 +15,32 @@
 
 #include "MorphAutomat.h"
 #include <unordered_map>
+#include <vector>
+#include <stack>
+#include <queue>
 
 // Forward declare the struct first
 struct CTrieNodeBuild;
+
+// Node pool for efficient memory management
+class NodePool {
+private:
+	static const size_t NODE_POOL_BLOCK_SIZE = 1024;  // Allocate nodes in blocks
+	std::vector<std::vector<CTrieNodeBuild>> m_Blocks;
+	std::vector<CTrieNodeBuild*> m_FreeNodes;
+	size_t m_TotalNodes;
+	size_t m_ReservedSize;
+
+public:
+	NodePool() : m_TotalNodes(0), m_ReservedSize(0) {}
+
+	CTrieNodeBuild* Allocate();
+	void Release(CTrieNodeBuild* node);
+	void Clear();
+	void Reserve(size_t size);  // New method
+	size_t GetTotalNodes() const { return m_TotalNodes; }
+	size_t GetReservedSize() const { return m_ReservedSize; }
+};
 
 // Define the full struct before anything that uses it
 struct CTrieNodeBuild
@@ -30,7 +53,6 @@ struct CTrieNodeBuild
 	int							m_NodeId;
 	BYTE						m_FirstChildNo;
 	BYTE						m_SecondChildNo;
-	CTrieNodeBuild**			m_pRegister;
 
 	void				Initialize();
 	void				AddChild(CTrieNodeBuild* Child, BYTE ChildNo);
@@ -112,8 +134,8 @@ private:
 	bool                IsValid() const;
 	CTrieRegister&      GetRegister(const CTrieNodeBuild* pNode);
 	
-	// Pre-allocation support
-	std::vector<CTrieNodeBuild*> m_NodePool;
+	// Memory management
+	NodePool m_NodePool;
 	size_t m_EstimatedNodes;
 	
 public:
@@ -125,6 +147,9 @@ public:
 	void	ClearRegister();
 	void	ConvertBuildRelationsToRelations();
 	void    ReserveSpace(size_t estimatedForms);
+	
+	// Statistics
+	size_t  GetTotalNodes() const { return m_NodePool.GetTotalNodes(); }
 };
 
 #endif

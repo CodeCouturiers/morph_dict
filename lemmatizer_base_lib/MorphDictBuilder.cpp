@@ -370,8 +370,29 @@ void  CMorphDictBuilder::BuildLemmatizer(std::string mwz_path, bool allow_russia
 		CreateAutomat(wizard);
 		LOGI << "Saving...";
 		auto outFileName = fs::path(output_folder) / MORPH_MAIN_FILES;
-		Save(outFileName.string());
-		LOGI << "Successful written indices of the main automat to " << outFileName << std::endl;
+		std::cerr << "Attempting to save morphological dictionary components..." << std::endl;
+		
+		try {
+			Save(outFileName.string());
+			
+			// Check component files
+			auto formsFile = fs::path(outFileName).replace_extension("forms_autom");
+			auto annotFile = fs::path(outFileName).replace_extension("annot");
+			auto basesFile = fs::path(outFileName).replace_extension("bases");
+			
+			size_t total_size = 0;
+			if (fs::exists(formsFile)) total_size += fs::file_size(formsFile);
+			if (fs::exists(annotFile)) total_size += fs::file_size(annotFile);
+			if (fs::exists(basesFile)) total_size += fs::file_size(basesFile);
+			
+			std::cerr << "Successfully saved morphological dictionary components, total size: " 
+				<< total_size << " bytes" << std::endl;
+		} catch (const std::exception& e) {
+			std::cerr << "Exception while saving morphological dictionary: " << e.what() << std::endl;
+			throw; // Re-throw to maintain error propagation
+		}
+
+		LOGI << "Successfully written indices of the main automat to " << outFileName << std::endl;
 		if (!opts.get_value()["SkipPredictBase"].GetBool()) {
 			if (!GenPredictIdx(wizard, postfix_len, min_freq, output_folder, opts))
 			{
@@ -393,6 +414,4 @@ void  CMorphDictBuilder::BuildLemmatizer(std::string mwz_path, bool allow_russia
 			fs::copy_file(src, trg, fs::copy_options::overwrite_existing);
 		}
 	}
-
-
 }

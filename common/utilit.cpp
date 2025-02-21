@@ -602,15 +602,43 @@ bool CShortStringHolder::CreateFromSet(const StringSet& in)
 
 void CShortStringHolder::WriteShortStringHolder(const std::string& FileName) const
 {
-	std::ofstream outp(FileName.c_str(), std::ios::binary);
-	if (!outp.is_open()) {
-		throw CExpc(Format("cannot write to %s", FileName.c_str()));
-	};
-    assert (size() < std::numeric_limits<uint32_t>::max());
-    uint32_t nLength = size();
-	outp.write((char*)&nLength, sizeof(nLength));
-	outp.write((char*)&m_Buffer[0], m_Buffer.size());
-	outp.close();
+    try {
+        std::cout << "Writing short string holder to " << FileName << std::endl;
+        
+        std::ofstream outp(FileName.c_str(), std::ios::binary);
+        if (!outp.is_open()) {
+            throw CExpc(Format("Cannot open file %s for writing", FileName.c_str()));
+        }
+
+        uint32_t nLength = size();
+        std::cout << "Writing " << nLength << " strings" << std::endl;
+        
+        outp.write((char*)&nLength, sizeof(nLength));
+        if (outp.fail()) {
+            throw CExpc(Format("Failed to write length to %s", FileName.c_str()));
+        }
+
+        if (!m_Buffer.empty()) {
+            std::cout << "Writing buffer of size " << m_Buffer.size() << " bytes" << std::endl;
+            outp.write((char*)&m_Buffer[0], m_Buffer.size());
+            if (outp.fail()) {
+                throw CExpc(Format("Failed to write buffer to %s", FileName.c_str()));
+            }
+        }
+
+        outp.close();
+        if (outp.fail()) {
+            throw CExpc(Format("Failed to close file %s", FileName.c_str()));
+        }
+
+        std::cout << "Successfully wrote short string holder to " << FileName << std::endl;
+        std::cout << "Total strings: " << nLength << std::endl;
+        std::cout << "Total bytes written: " << (sizeof(nLength) + m_Buffer.size()) << std::endl;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Error writing short string holder: " << e.what() << std::endl;
+        throw;
+    }
 }
 
 

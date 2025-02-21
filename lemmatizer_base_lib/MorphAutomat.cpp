@@ -209,25 +209,63 @@ void CMorphAutomat::Load(std::string AutomatFileName)
 
 void CMorphAutomat::Save(std::string AutomatFileName) const
 {
-	FILE* fp = fopen(AutomatFileName.c_str(), "wb");
-	if (!fp)
-		throw CExpc(Format("cannot open file %s", AutomatFileName.c_str()));
-	fprintf(fp, "%i\n", (int)m_NodesCount);
-	if (fwrite(m_pNodes, sizeof(CMorphAutomNode), m_NodesCount, fp) != m_NodesCount) {
-		fclose(fp);
-		throw CExpc(Format("cannot write nodes to %s", AutomatFileName.c_str()));
-	}
+	try {
+		std::cout << "Saving morph automat to " << AutomatFileName << std::endl;
+		
+		FILE* fp = fopen(AutomatFileName.c_str(), "wb");
+		if (!fp) {
+			throw CExpc(Format("Cannot open file %s for writing", AutomatFileName.c_str()));
+		}
 
-	fprintf(fp, "%i\n", (int)m_RelationsCount);
-	if (fwrite(m_pRelations, sizeof(CMorphAutomRelation), m_RelationsCount, fp) != m_RelationsCount) {
-		fclose(fp);
-		throw CExpc(Format("cannot write relations to %s", AutomatFileName.c_str()));
-	}
+		std::cout << "Writing nodes count: " << m_NodesCount << std::endl;
+		if (fprintf(fp, "%i\n", (int)m_NodesCount) < 0) {
+			fclose(fp);
+			throw CExpc(Format("Failed to write nodes count to %s", AutomatFileName.c_str()));
+		}
 
-	fwrite(m_Alphabet2Code, sizeof(int), 256, fp);
-	fclose(fp);
-	std::cout << m_RelationsCount << " children\n";
-	std::cout << m_NodesCount << " nodes\n";
+		std::cout << "Writing " << m_NodesCount << " nodes" << std::endl;
+		if (fwrite(m_pNodes, sizeof(CMorphAutomNode), m_NodesCount, fp) != m_NodesCount) {
+			fclose(fp);
+			throw CExpc(Format("Failed to write nodes to %s", AutomatFileName.c_str()));
+		}
+
+		std::cout << "Writing relations count: " << m_RelationsCount << std::endl;
+		if (fprintf(fp, "%i\n", (int)m_RelationsCount) < 0) {
+			fclose(fp);
+			throw CExpc(Format("Failed to write relations count to %s", AutomatFileName.c_str()));
+		}
+
+		std::cout << "Writing " << m_RelationsCount << " relations" << std::endl;
+		if (fwrite(m_pRelations, sizeof(CMorphAutomRelation), m_RelationsCount, fp) != m_RelationsCount) {
+			fclose(fp);
+			throw CExpc(Format("Failed to write relations to %s", AutomatFileName.c_str()));
+		}
+
+		std::cout << "Writing alphabet codes" << std::endl;
+		if (fwrite(m_Alphabet2Code, sizeof(int), 256, fp) != 256) {
+			fclose(fp);
+			throw CExpc(Format("Failed to write alphabet codes to %s", AutomatFileName.c_str()));
+		}
+
+		if (fclose(fp) != 0) {
+			throw CExpc(Format("Failed to close file %s", AutomatFileName.c_str()));
+		}
+
+		std::cout << "Successfully saved morph automat to " << AutomatFileName << std::endl;
+		std::cout << "Total nodes: " << m_NodesCount << std::endl;
+		std::cout << "Total relations: " << m_RelationsCount << std::endl;
+		std::cout << "Total bytes written: " << (
+			sizeof(int) + // nodes count
+			m_NodesCount * sizeof(CMorphAutomNode) +
+			sizeof(int) + // relations count
+			m_RelationsCount * sizeof(CMorphAutomRelation) +
+			256 * sizeof(int) // alphabet codes
+		) << std::endl;
+	}
+	catch (const std::exception& e) {
+		std::cerr << "Error saving morph automat: " << e.what() << std::endl;
+		throw;
+	}
 };
 
 

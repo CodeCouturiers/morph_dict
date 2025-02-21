@@ -17,6 +17,9 @@
 #include "assert.h"
 #include <algorithm>
 #include <cassert>
+#include <memory>
+#include <chrono>
+#include <iomanip>
 
 //======================================================
 //=============		CTrieNodeBuild	   =============
@@ -24,6 +27,61 @@
 int NodeId = 0;
 size_t RegisterSize = 0;
 
+const size_t NODE_POOL_BLOCK_SIZE = 1024;  // Allocate nodes in blocks
+
+// NodePool implementation
+CTrieNodeBuild* NodePool::Allocate() {
+    if (m_FreeNodes.empty()) {
+        // Allocate new block when needed
+        m_Blocks.emplace_back(NODE_POOL_BLOCK_SIZE);
+        auto& newBlock = m_Blocks.back();
+        for (auto& node : newBlock) {
+            m_FreeNodes.push_back(&node);
+        }
+    }
+
+    CTrieNodeBuild* node = m_FreeNodes.back();
+    m_FreeNodes.pop_back();
+    m_TotalNodes++;
+    node->Initialize();
+    return node;
+}
+
+void NodePool::Release(CTrieNodeBuild* node) {
+    if (!node) return;
+    m_FreeNodes.push_back(node);
+    m_TotalNodes--;
+}
+
+void NodePool::Clear() {
+    m_Blocks.clear();
+    m_FreeNodes.clear();
+    m_TotalNodes = 0;
+}
+
+void NodePool::Reserve(size_t size) {
+    if (size <= m_ReservedSize) return;
+    
+    size_t blocksNeeded = (size + NODE_POOL_BLOCK_SIZE - 1) / NODE_POOL_BLOCK_SIZE;
+    size_t currentBlocks = m_Blocks.size();
+    
+    // Pre-allocate blocks
+    m_Blocks.reserve(blocksNeeded);
+    m_FreeNodes.reserve(size);
+    
+    // Add new blocks until we reach the desired capacity
+    while (m_Blocks.size() < blocksNeeded) {
+        m_Blocks.emplace_back(NODE_POOL_BLOCK_SIZE);
+        auto& newBlock = m_Blocks.back();
+        for (auto& node : newBlock) {
+            m_FreeNodes.push_back(&node);
+        }
+    }
+    
+    m_ReservedSize = blocksNeeded * NODE_POOL_BLOCK_SIZE;
+}
+
+// CTrieNodeBuild implementation
 void CTrieNodeBuild::Initialize()
 {
 	m_bFinal = false;
@@ -46,7 +104,11 @@ void CTrieNodeBuild::SetFinal(bool bFinal)
 
 void CTrieNodeBuild::AddChild(CTrieNodeBuild* Child, BYTE ChildNo)
 {
-	assert(Child != this);
+	if (!Child || Child == this) {
+		assert(false && "Cannot add null child or self as child");
+		return;
+	}
+	
 	assert(ChildNo < MaxAlphabetSize);
 	
 	// If there's already a child, update its incoming count
@@ -171,13 +233,66 @@ void	CTrieNodeBuild::SetNodeIdNullRecursive ()
 
 void	CTrieNodeBuild::UnregisterRecursive()
 {
-	m_bRegistered = false;
-	m_RegisteredNode = nullptr;
-	for (size_t i=m_FirstChildNo; i < MaxAlphabetSize; i++)
-		if (m_Children[i])
-			m_Children[i]->UnregisterRecursive( );
-	return;			
-};
+	auto start_time = std::chrono::steady_clock::now();
+	size_t nodes_processed = 0;
+	size_t unique_nodes = 0;
+	auto last_update = start_time;
+	const auto update_interval = std::chrono::seconds(1);
+
+	// Use a stack to avoid recursion and track visited nodes
+	std::stack<CTrieNodeBuild*> nodeStack;
+	std::unordered_set<CTrieNodeBuild*> visited;
+	nodeStack.push(this);
+	
+	while (!nodeStack.empty()) {
+		CTrieNodeBuild* current = nodeStack.top();
+		nodeStack.pop();
+		
+		nodes_processed++;
+		
+		// Check if we've already visited this node
+		if (visited.insert(current).second) {
+			unique_nodes++;
+			current->m_bRegistered = false;
+			current->m_RegisteredNode = nullptr;
+			
+			// Only process actual children (FirstChildNo and SecondChildNo)
+			if (current->m_FirstChildNo != 0xff) {
+				if (current->m_Children[current->m_FirstChildNo] && 
+					visited.find(current->m_Children[current->m_FirstChildNo]) == visited.end()) {
+					nodeStack.push(current->m_Children[current->m_FirstChildNo]);
+				}
+				
+				if (current->m_SecondChildNo != 0xff && 
+					current->m_Children[current->m_SecondChildNo] && 
+					visited.find(current->m_Children[current->m_SecondChildNo]) == visited.end()) {
+					nodeStack.push(current->m_Children[current->m_SecondChildNo]);
+				}
+			}
+		}
+
+		// Log progress every second
+		auto current_time = std::chrono::steady_clock::now();
+		auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - last_update);
+		
+		if (elapsed >= update_interval) {
+			double nodes_per_sec = static_cast<double>(nodes_processed) / 
+				std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
+			std::cerr << "Unregistering nodes: " << nodes_processed << " (" << std::fixed 
+				<< std::setprecision(1) << nodes_per_sec << " nodes/s), unique nodes: " << unique_nodes 
+				<< ", register size: " << RegisterSize << "\r";
+			last_update = current_time;
+		}
+	}
+
+	auto end_time = std::chrono::steady_clock::now();
+	double total_time = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
+	double avg_nodes_per_sec = static_cast<double>(nodes_processed) / total_time;
+
+	std::cerr << "\nUnregistered " << nodes_processed << " total nodes (" << unique_nodes << " unique) in " 
+		<< total_time << " seconds (" << std::fixed << std::setprecision(1) << avg_nodes_per_sec << " nodes/s)\n"
+		<< "Final register size: " << RegisterSize << "\n";
+}
 
 
 
@@ -226,19 +341,30 @@ CMorphAutomatBuilder::~CMorphAutomatBuilder() {
 
 void CMorphAutomatBuilder::ReserveSpace(size_t estimatedForms) {
 	m_EstimatedNodes = estimatedForms * 2;  // Rough estimate
-	m_NodePool.reserve(m_EstimatedNodes);
+	m_NodePool.Reserve(m_EstimatedNodes);
+	m_Prefix.reserve(256);  // Maximum word length is typically less than 256
+	m_DeletedNodes.reserve(m_EstimatedNodes / 4);  // Rough estimate for deleted nodes
+	m_Register.reserve(m_EstimatedNodes);
 }
 
 CTrieNodeBuild* CMorphAutomatBuilder::CreateNode() {
-	CTrieNodeBuild* node = new CTrieNodeBuild();
-	node->Initialize();
-	m_NodePool.push_back(node);
-	return node;
+	return m_NodePool.Allocate();
 }
 
 void CMorphAutomatBuilder::DeleteNode(CTrieNodeBuild* pNode) {
 	if (!pNode) return;
-	m_DeletedNodes.push_back(pNode);
+	
+	// Recursively delete all children that have no other incoming relations
+	for (size_t i = 0; i < MaxAlphabetSize; i++) {
+		if (pNode->m_Children[i]) {
+			pNode->m_Children[i]->m_IncomingRelationsCount--;
+			if (pNode->m_Children[i]->m_IncomingRelationsCount == 0) {
+				DeleteNode(pNode->m_Children[i]);
+			}
+		}
+	}
+	
+	m_NodePool.Release(pNode);
 }
 
 CTrieNodeBuild* CMorphAutomatBuilder::CloneNode(const CTrieNodeBuild* pPrototype) {
@@ -260,10 +386,25 @@ CTrieNodeBuild* CMorphAutomatBuilder::CloneNode(const CTrieNodeBuild* pPrototype
 }
 
 void CMorphAutomatBuilder::ClearBuildNodes() {
-	for (auto* node : m_NodePool) {
-		delete node;
+	if (m_pRoot) {
+		// Recursively mark all nodes for deletion
+		std::queue<CTrieNodeBuild*> queue;
+		queue.push(m_pRoot);
+		
+		while (!queue.empty()) {
+			CTrieNodeBuild* node = queue.front();
+			queue.pop();
+			
+			for (size_t i = 0; i < MaxAlphabetSize; i++) {
+				if (node->m_Children[i]) {
+					queue.push(node->m_Children[i]);
+				}
+			}
+			
+			m_NodePool.Release(node);
+		}
 	}
-	m_NodePool.clear();
+
 	m_pRoot = nullptr;
 	m_Register.clear();
 	m_RegisterHash.clear();
@@ -314,6 +455,17 @@ CTrieRegister& CMorphAutomatBuilder::GetRegister(const CTrieNodeBuild* pNode) {
 
 CTrieNodeBuild* CMorphAutomatBuilder::ReplaceOrRegister(CTrieNodeBuild* pNode)
 {
+	if (!pNode) return nullptr;
+
+	// Check for self-references in children
+	for (size_t i = 0; i < MaxAlphabetSize; i++) {
+		if (pNode->m_Children[i] == pNode) {
+			// Fix self-reference by creating a new node
+			CTrieNodeBuild* newNode = CloneNode(pNode);
+			pNode->m_Children[i] = newNode;
+		}
+	}
+
 	auto it = m_Register.find(pNode);
 	if(it != m_Register.end())
 	{
@@ -391,6 +543,8 @@ void CMorphAutomatBuilder::UnregisterNode(CTrieNodeBuild* pNode)
 // we do not register the parent node; we  register only the children
 CTrieNodeBuild* CMorphAutomatBuilder::AddSuffix(CTrieNodeBuild* pParentNodeNo, const char* WordForm)
 {
+	if (!pParentNodeNo || !WordForm) return nullptr;
+
 	// save current char
 	BYTE RelationChar = (BYTE)*WordForm;
 	WordForm++;
@@ -399,24 +553,34 @@ CTrieNodeBuild* CMorphAutomatBuilder::AddSuffix(CTrieNodeBuild* pParentNodeNo, c
 	CTrieNodeBuild* pChildNode = CreateNode();
 	 
 	//  adding the rest of the suffix 
-	if (*WordForm)
-		AddSuffix(pChildNode, WordForm); 
+	if (*WordForm) {
+		CTrieNodeBuild* suffixNode = AddSuffix(pChildNode, WordForm);
+		if (!suffixNode) {
+			DeleteNode(pChildNode);
+			return nullptr;
+		}
+	}
 
 	// making it final
-	if (*WordForm == 0)
-		pChildNode->SetFinal( true ) ;
+	if (*WordForm == 0) {
+		pChildNode->SetFinal(true);
+	}
 
 	//  replace or register (the children should be already registered)
 	pChildNode = ReplaceOrRegister(pChildNode);
-		
+	if (!pChildNode) return nullptr;
+
+	// Check for self-reference before adding child
+	if (pChildNode == pParentNodeNo) {
+		DeleteNode(pChildNode);
+		return nullptr;
+	}
 
 	//  adding this child to the parent
-	{
-		assert (!pParentNodeNo->m_bRegistered);
-		pParentNodeNo->AddChild(pChildNode, m_Alphabet2Code[RelationChar]);
-	}
-	return 	pChildNode;
-};
+	pParentNodeNo->AddChild(pChildNode, m_Alphabet2Code[RelationChar]);
+	
+	return pChildNode;
+}
 
 
 
@@ -483,13 +647,28 @@ void CMorphAutomatBuilder::AddStringDaciuk(const std::string& WordForm)
 void CMorphAutomatBuilder::ConvertBuildRelationsToRelations()
 {
 	if (!m_pRoot) return;
+
+	std::cerr << "Starting conversion with RegisterSize=" << RegisterSize << "\n";
+	
+	// Count actual registered nodes
+	size_t actualRegistered = 0;
+	for(const auto& pair : m_Register) {
+		if(pair.first && pair.first->m_bRegistered) {
+			actualRegistered++;
+		}
+	}
+	std::cerr << "Actual registered nodes: " << actualRegistered << "\n";
+	
 	m_pRoot->SetNodeIdNullRecursive();
 	std::queue<CTrieNodeBuild*> NodesQueue;
+	std::unordered_set<CTrieNodeBuild*> visitedNodes;
 	NodesQueue.push(m_pRoot);
 	m_pRoot->m_NodeId = 0;
+	visitedNodes.insert(m_pRoot);
 
 	std::vector<CMorphAutomNode> Nodes;
 	std::vector<CMorphAutomRelation> Relations;
+	size_t maxNodeId = 0;
 
 	while (!NodesQueue.empty())
 	{
@@ -507,6 +686,7 @@ void CMorphAutomatBuilder::ConvertBuildRelationsToRelations()
 		Nodes.push_back(N);
 
 		int CurrentNodeId = Nodes.size() + NodesQueue.size();
+		maxNodeId = std::max(maxNodeId, static_cast<size_t>(CurrentNodeId));
 
 		for (size_t i=0; i < MaxAlphabetSize; i++)
 		if (pNode->m_Children[i])
@@ -516,6 +696,7 @@ void CMorphAutomatBuilder::ConvertBuildRelationsToRelations()
 			{
 				Child->m_NodeId = CurrentNodeId++;
 				NodesQueue.push(Child);
+				visitedNodes.insert(Child);
 			};
 
 			// adding new relation
@@ -533,6 +714,12 @@ void CMorphAutomatBuilder::ConvertBuildRelationsToRelations()
 		};
 	};
 
+	std::cerr << "Conversion stats:\n"
+		<< "  Visited nodes: " << visitedNodes.size() << "\n"
+		<< "  Nodes vector size: " << Nodes.size() << "\n"
+		<< "  Relations size: " << Relations.size() << "\n"
+		<< "  Max node ID: " << maxNodeId << "\n";
+
 	Clear();
 
 	m_NodesCount = Nodes.size();
@@ -543,6 +730,9 @@ void CMorphAutomatBuilder::ConvertBuildRelationsToRelations()
 	m_pRelations = new CMorphAutomRelation[m_RelationsCount];
 	copy(Relations.begin(), Relations.end(), m_pRelations);
 
+	std::cerr << "Final automaton:\n"
+		<< "  Nodes: " << m_NodesCount << "\n"
+		<< "  Relations: " << m_RelationsCount << "\n";
 };
 
 void CMorphAutomatBuilder::ClearRegister() {
