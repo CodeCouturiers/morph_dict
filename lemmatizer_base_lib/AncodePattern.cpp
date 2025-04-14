@@ -90,17 +90,40 @@ std::string CAncodePattern::GetGrammemsByAncodes() const
 	if (m_GramCodes == "??") {
 		return "";
 	}
+	
 	for (int i = 0; i < m_GramCodes.length(); i += 2)
 	{
-		uint64_t g;
+	    // Skip if we don't have enough characters left for a valid code
+	    if (i + 1 >= m_GramCodes.length()) {
+	        PLOGE << "Incomplete gramcode at position " << i << " in string: " << m_GramCodes;
+	        continue;
+	    }
+	    
+	    // Check for non-ASCII characters that might cause problems
+	    bool hasNonAscii = false;
+	    for (int j = 0; j < 2; j++) {
+	        if (i + j < m_GramCodes.length() && static_cast<unsigned char>(m_GramCodes[i + j]) > 127) {
+	            hasNonAscii = true;
+	            break;
+	        }
+	    }
+	    
+	    if (hasNonAscii) {
+	        PLOGW << "Skipping non-ASCII gramcode at position " << i << " in string: " << m_GramCodes;
+	        continue;
+	    }
+	    
+		uint64_t g = 0;
         if (!GetGramTab()->GetGrammems(m_GramCodes.c_str()+i, g))
 		{
-				assert (false);
+		    PLOGE << "Failed to get grammems for code: " << m_GramCodes.substr(i,2) << " (skipping)";
+		    continue; // Skip this code instead of asserting
 		};
+		
 		Result += GetGramTab()->GrammemsToStr(g);
 		Result += "; ";
-
 	};
+	
 	return Result;
 };
 
@@ -141,10 +164,10 @@ bool CAncodePattern::ModifyGrammems(uint64_t Grammems, part_of_speech_mask_t Pos
 	{
 			uint64_t CurrGrammems = 0;		
 			bool b = GetGramTab()->GetGrammems(strOldGramcodes.c_str() + j, CurrGrammems);
-			assert (b);
 			if (!b)
 			{
-                ErrorMessage(Format("Cannot get grammems by gramcode %s ",strOldGramcodes.substr(j,2).c_str()));
+                PLOGE << "Failed to get grammems for code: " << strOldGramcodes.substr(j,2) << " (skipping this code)";
+               // ErrorMessage(Format("Cannot get grammems by gramcode %s ",strOldGramcodes.substr(j,2).c_str()));
 				m_iGrammems = 0;
 				break;
 			};
@@ -200,10 +223,11 @@ bool CAncodePattern::InitAncodePattern()
 		{
 				uint64_t CurrGrammems = 0;		
 				bool b = GetGramTab()->GetGrammems(m_GramCodes.c_str() + j, CurrGrammems);
-				assert (b);
 				if (!b)
 				{
-                    ErrorMessage(Format("Cannot get grammems by gramcode %s ",m_GramCodes.substr(j,2).c_str()));
+                    PLOGE << "Failed to get grammems for code: " << m_GramCodes.substr(j,2) << " (skipping this code)";
+                  //  ErrorMessage(Format("Cannot get grammems by gramcode %s ",m_GramCodes.substr(j,2).c_str()));
+                    continue; // Skip this code instead of asserting
 				};
 				m_iGrammems |= CurrGrammems;
                 BYTE pos = GetGramTab()->GetPartOfSpeech(m_GramCodes.c_str() + j);
@@ -217,28 +241,31 @@ bool CAncodePattern::InitAncodePattern()
 		)
 	{
 		bool b = GetGramTab()->GetGrammems(m_CommonGramCode.c_str(), m_TypeGrammems);
-		assert (b);
 		if (!b)
 		{
-			ErrorMessage(Format("Cannot get grammems by type gramcode %s ",m_CommonGramCode.c_str()));
-		};
-
-		//добавляем граммкод аббр в m_TypeGrammems,а все полные формы аббр будут в FormGramCodes
-		for (size_t j=0; j < m_CommonGramCode.length(); j+=2)
-		{
-				uint64_t CurrGrammems = 0;		
-				bool b = GetGramTab()->GetGrammems(m_CommonGramCode.c_str() + j, CurrGrammems);
-				assert (b);
-				if (!b)
-				{
-                    ErrorMessage(Format("Cannot get grammems by gramcode %s ",m_CommonGramCode.substr(j,2).c_str()));
-				};
-				m_TypeGrammems |= CurrGrammems;				
+			PLOGE << "Failed to get grammems for common gram code: " << m_CommonGramCode;
+		//	ErrorMessage(Format("Cannot get grammems by type gramcode %s ",m_CommonGramCode.c_str()));
+			// Continue even if there's an error
 		}
-		if(m_CommonGramCode.length()>2) //аббр
-			m_TypeGrammems &= ~(m_iGrammems|256); // rVocativ = 256 = зв падеж, "км  12 2  RLE aa CS? SENT_END +Фаао КИЛОМЕТР абавагадаеажазаиайакал"
-	};
-
+		else 
+		{
+            //добавляем граммкод аббр в m_TypeGrammems,а все полные формы аббр будут в FormGramCodes
+            for (size_t j=0; j < m_CommonGramCode.length(); j+=2)
+            {
+                uint64_t CurrGrammems = 0;		
+                bool b = GetGramTab()->GetGrammems(m_CommonGramCode.c_str() + j, CurrGrammems);
+                if (!b)
+                {
+                    PLOGE << "Failed to get grammems for common gram code part: " << m_CommonGramCode.substr(j,2);
+              //      ErrorMessage(Format("Cannot get grammems by gramcode %s ",m_CommonGramCode.substr(j,2).c_str()));
+                    continue; // Skip this code instead of asserting
+                };
+                m_TypeGrammems |= CurrGrammems;				
+            }
+            if(m_CommonGramCode.length()>2) //аббр
+                m_TypeGrammems &= ~(m_iGrammems|256); // rVocativ = 256 = зв падеж, "км  12 2  RLE aa CS? SENT_END +Фаао КИЛОМЕТР абавагадаеажазаиайакал"
+        }
+	}
 
 	return true;
 };

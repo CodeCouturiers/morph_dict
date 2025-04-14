@@ -13,10 +13,10 @@ class CAgramtab;
 
 class CAncodePattern 
 {
-    void    ResetFlags();
+protected:
+	void    ResetFlags();
 	std::string			m_GramCodes;
 	MorphLanguageEnum m_Language;
-protected:
 	const	CAgramtab* GetGramTab() const;
 
 public:

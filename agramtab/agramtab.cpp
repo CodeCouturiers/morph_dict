@@ -35,18 +35,52 @@ CAgramtabLine::CAgramtabLine(size_t SourceLineNo)
 bool CAgramtab::GetGrammems(const char* gram_code, grammems_mask_t& grammems)  const
 {
     grammems = 0;
+    // Check for null, empty, or invalid gram_code
     if (gram_code == 0) return false;
     if (!*gram_code) return false;
     if (gram_code[0] == '?') return false;
-
-    const CAgramtabLine* L = GetLine(GramcodeToLineIndex(gram_code));
-
-    if (L == NULL)
-        return
-        false;
-
-    grammems = L->m_Grammems;
-    return  true;
+    
+    // Additional validation checks
+    if (strlen(gram_code) < 2) {
+        PLOGE << "Invalid gram_code (too short): " << gram_code;
+        return false;
+    }
+    if (!isalpha(gram_code[0])) {
+        PLOGE << "Invalid gram_code (first char not alpha): " << gram_code;
+        return false;
+    }
+    
+    try {
+        size_t lineIndex = GramcodeToLineIndex(gram_code);
+        
+        // Validate line index
+        if (lineIndex >= GetMaxGrmCount()) {
+            PLOGE << "Invalid line index for gram_code: " << gram_code << ", index=" << lineIndex 
+                  << ", max=" << GetMaxGrmCount() << ", language=" << GetStringByLanguage(m_Language);
+            return false;
+        }
+        
+        const CAgramtabLine* L = GetLine(lineIndex);
+        
+        if (L == NULL) {
+            PLOGE << "NULL line for gram_code: " << gram_code << ", index=" << lineIndex 
+                  << ", language=" << GetStringByLanguage(m_Language);
+            return false;
+        }
+        
+        grammems = L->m_Grammems;
+        return true;
+    }
+    catch (const std::exception& e) {
+        // Catch any unexpected exceptions rather than crashing
+        PLOGE << "Exception in GetGrammems for gram_code: " << gram_code << ", error: " << e.what();
+        return false;
+    }
+    catch (...) {
+        // Catch any unexpected exceptions rather than crashing
+        PLOGE << "Unknown exception in GetGrammems for gram_code: " << gram_code;
+        return false;
+    }
 };
 
 std::string   CAgramtab::GrammemsToStr(grammems_mask_t grammems, NamingAlphabet na) const
@@ -214,16 +248,33 @@ bool CAgramtab::CheckGramCode(const char* gram_code) const
 
 part_of_speech_t CAgramtab::GetPartOfSpeech(const char* gram_code) const
 {
+    // Additional validations to prevent crashes
     if (gram_code == 0) return UnknownPartOfSpeech;
     if (*gram_code == 0) return UnknownPartOfSpeech;
     if (*gram_code == '?') return UnknownPartOfSpeech;
-
-    const CAgramtabLine* L = GetLine(GramcodeToLineIndex(gram_code));
-
-    if (L == 0)
+    
+    // Safety check: ensure the gram_code has at least 2 valid characters
+    if (strlen(gram_code) < 2) return UnknownPartOfSpeech;
+    
+    // Only accept valid alpha characters as first char to prevent crashes
+    if (!isalpha(gram_code[0])) return UnknownPartOfSpeech;
+    
+    try {
+        size_t lineIndex = GramcodeToLineIndex(gram_code);
+        
+        // Validate the line index before attempting to use it
+        if (lineIndex >= GetMaxGrmCount()) return UnknownPartOfSpeech;
+        
+        const CAgramtabLine* L = GetLine(lineIndex);
+        if (L == 0) return UnknownPartOfSpeech;
+        
+        return L->m_PartOfSpeech;
+    }
+    catch (...) {
+        // Catch any unexpected exceptions rather than crashing
+        PLOGE << "Exception in GetPartOfSpeech for gram_code: " << gram_code;
         return UnknownPartOfSpeech;
-
-    return L->m_PartOfSpeech;
+    }
 }
 
 size_t CAgramtab::GetSourceLineNo(const char* gram_code) const
@@ -263,60 +314,142 @@ void CAgramtab::ReadFromFolder(std::string folder) {
     BuildPartOfSpeechMap();
 
     m_InputJsonPath = (std::filesystem::path(folder) / "gramtab.json").string();
+    
+    PLOGI << "Attempting to read grammar table from: " << m_InputJsonPath;
+
+    // Verify file exists before attempting to open
+    if (!std::filesystem::exists(m_InputJsonPath)) {
+        PLOGE << "Grammar table file does not exist: " << m_InputJsonPath;
+        throw CExpc("Grammar table file does not exist: %s", m_InputJsonPath.c_str());
+    }
 
     std::ifstream inp(m_InputJsonPath);
     if (!inp.good()) {
+        PLOGE << "Cannot open grammar table file: " << m_InputJsonPath;
         throw CExpc("Cannot read gramtab for language %s path=%s", GetStringByLanguage(m_Language).c_str(), m_InputJsonPath.c_str());
     }
     
-    rapidjson::Document doc;
-    rapidjson::IStreamWrapper isw(inp);
-    doc.ParseStream(isw);
-    inp.close();
+    try {
+        rapidjson::Document doc;
+        rapidjson::IStreamWrapper isw(inp);
+        doc.ParseStream(isw);
+        inp.close();
 
-    std::unordered_map<std::string, grammem_t> grammem_dict;
-    for (part_of_speech_t i = 0; i < GetGrammemsCount(); i++) {
-        grammem_dict.insert({ GetGrammemStr(i, naLatin), i });
-    }
+        if (doc.HasParseError()) {
+            PLOGE << "Failed to parse JSON grammar table: " << m_InputJsonPath << ", error: " << doc.GetParseError();
+            throw CExpc("Failed to parse JSON grammar table: %s", m_InputJsonPath.c_str());
+        }
 
-    for (size_t i = 0; i < GetMaxGrmCount(); i++)
-        GetLine(i) = 0;
+        // Verify essential sections in the JSON structure
+        if (!doc.HasMember("gramcodes") || !doc["gramcodes"].IsObject()) {
+            PLOGE << "Missing or invalid 'gramcodes' section in grammar table: " << m_InputJsonPath;
+            throw CExpc("Invalid grammar table format: missing 'gramcodes' section");
+        }
 
-    size_t line_no = 0;
-    for (auto& item : doc["gramcodes"].GetObject()) {
-        std::string gramcode = item.name.GetString();
-        auto& val = item.value;
-        part_of_speech_t pos = UnknownPartOfSpeech;
-        auto pos_it = rapidjson::Pointer("/p").Get(val);
-        if (pos_it != nullptr) {
-            const std::string& pos_str = pos_it->GetString();
-            if (!pos_str.empty()) {
-                pos = m_PartOfSpeechesHashMap.at(pos_str);
+        if (!doc.HasMember("plug_noun_gram_code") || !doc["plug_noun_gram_code"].IsString()) {
+            PLOGE << "Missing or invalid 'plug_noun_gram_code' in grammar table: " << m_InputJsonPath;
+            throw CExpc("Invalid grammar table format: missing 'plug_noun_gram_code'");
+        }
+
+        std::unordered_map<std::string, grammem_t> grammem_dict;
+        for (part_of_speech_t i = 0; i < GetGrammemsCount(); i++) {
+            grammem_dict.insert({ GetGrammemStr(i, naLatin), i });
+        }
+
+        for (size_t i = 0; i < GetMaxGrmCount(); i++)
+            GetLine(i) = 0;
+
+        size_t line_no = 0;
+        size_t loaded_count = 0;
+        for (auto& item : doc["gramcodes"].GetObject()) {
+            std::string gramcode = item.name.GetString();
+            auto& val = item.value;
+            
+            // Skip invalid gramcodes
+            if (gramcode.length() < 2) {
+                PLOGW << "Skipping invalid gramcode (too short): " << gramcode;
+                continue;
             }
-        }
-        grammems_mask_t grammems = 0;
-        auto& grs = val["g"];
-        for (auto& s: val["g"].GetArray()) {
-            grammems |= _QM(grammem_dict[s.GetString()]);
-        }
+            
+            part_of_speech_t pos = UnknownPartOfSpeech;
+            auto pos_it = rapidjson::Pointer("/p").Get(val);
+            if (pos_it != nullptr) {
+                const std::string& pos_str = pos_it->GetString();
+                if (!pos_str.empty()) {
+                    auto it = m_PartOfSpeechesHashMap.find(pos_str);
+                    if (it == m_PartOfSpeechesHashMap.end()) {
+                        PLOGW << "Unknown part of speech in grammar table: " << pos_str;
+                        pos = UnknownPartOfSpeech;
+                    } else {
+                        pos = it->second;
+                    }
+                }
+            }
+            
+            grammems_mask_t grammems = 0;
+            if (val.HasMember("g") && val["g"].IsArray()) {
+                for (auto& s: val["g"].GetArray()) {
+                    std::string grammem_str = s.GetString();
+                    auto it = grammem_dict.find(grammem_str);
+                    if (it == grammem_dict.end()) {
+                        PLOGW << "Unknown grammem in grammar table: " << grammem_str;
+                        continue;
+                    }
+                    grammems |= _QM(it->second);
+                }
+            }
 
-        CAgramtabLine* pAgramtabLine = new CAgramtabLine(line_no);
-        pAgramtabLine->m_Grammems = grammems;
-        pAgramtabLine->m_PartOfSpeech = pos;
-        size_t gram_index = GramcodeToLineIndex(gramcode.c_str());
-        if (GetLine(gram_index)) {
-            throw CExpc(Format("line %i in %s contains a dublicate gramcode", line_no, m_InputJsonPath.c_str()));
+            CAgramtabLine* pAgramtabLine = new CAgramtabLine(line_no);
+            pAgramtabLine->m_Grammems = grammems;
+            pAgramtabLine->m_PartOfSpeech = pos;
+            
+            size_t gram_index = GramcodeToLineIndex(gramcode.c_str());
+            if (gram_index >= GetMaxGrmCount()) {
+                PLOGE << "Invalid line index for gramcode: " << gramcode << ", index=" << gram_index;
+                delete pAgramtabLine;
+                continue;
+            }
+            
+            if (GetLine(gram_index)) {
+                PLOGE << "Duplicate gramcode in grammar table: " << gramcode;
+                throw CExpc(Format("line %i in %s contains a dublicate gramcode", line_no, m_InputJsonPath.c_str()));
+            }
+            
+            GetLine(gram_index) = pAgramtabLine;
+            loaded_count++;
+            line_no++;
         }
-        GetLine(gram_index) = pAgramtabLine;
-        line_no++;
+        
+        PLOGI << "Successfully loaded " << loaded_count << " grammar entries from " << m_InputJsonPath;
+       
+        std::string gramcode = doc["plug_noun_gram_code"].GetString();
+        m_PlugNoun.m_GramCode = gramcode;
+        
+        if (m_PlugNoun.m_GramCode.empty()) {
+            PLOGE << "Empty plug_noun_gram_code in grammar table";
+            throw CExpc("Empty plug_noun_gram_code in grammar table");
+        }
+        
+        if (!doc["gramcodes"].HasMember(gramcode.c_str()) || !doc["gramcodes"][gramcode.c_str()].HasMember("l")) {
+            PLOGE << "Missing lemma for plug_noun_gram_code: " << gramcode;
+            throw CExpc("Missing lemma for plug_noun_gram_code");
+        }
+        
+        m_PlugNoun.m_Lemma = doc["gramcodes"][gramcode.c_str()]["l"].GetString();
+        
+        if (m_PlugNoun.m_Lemma.empty()) {
+            PLOGE << "Empty lemma for plug_noun_gram_code: " << gramcode;
+            throw CExpc("Empty lemma for plug_noun_gram_code");
+        }
+        
+        InitLanguageSpecific(doc);
+    } catch (const std::exception& e) {
+        PLOGE << "Exception while loading grammar table: " << e.what();
+        throw;
+    } catch (...) {
+        PLOGE << "Unknown exception while loading grammar table";
+        throw CExpc("Unknown error loading grammar table");
     }
-   
-    std::string gramcode = doc["plug_noun_gram_code"].GetString();
-    m_PlugNoun.m_GramCode = gramcode;
-    assert(!m_PlugNoun.m_GramCode.empty());
-    m_PlugNoun.m_Lemma  = doc["gramcodes"][gramcode]["l"].GetString();
-    assert(!m_PlugNoun.m_Lemma.empty());
-    InitLanguageSpecific(doc);
 }
 
 std::string CAgramtab::GetGramtabPath() const {
@@ -325,7 +458,17 @@ std::string CAgramtab::GetGramtabPath() const {
 
 std::string CAgramtab::GetDefaultPath() const {
     auto key = Format("Software\\Dialing\\Lemmatizer\\%s\\DictPath", GetStringByLanguage(m_Language).c_str());
-    return ::GetRegistryString(key);
+    std::string path = ::GetRegistryString(key);
+    
+    // If registry path is empty, use the known source location as fallback
+    if (path.empty()) {
+        std::filesystem::path fallbackPath = std::filesystem::path("C:\\RML\\Source\\morph_dict\\data");
+        fallbackPath /= GetStringByLanguage(m_Language).c_str();
+        path = fallbackPath.string();
+        PLOGW << "Registry path not found, using fallback path: " << path;
+    }
+    
+    return path;
 }
 
 std::string	CAgramtab::GetAllPossibleAncodes(part_of_speech_t pos, grammems_mask_t grammems)const
@@ -369,19 +512,51 @@ grammems_mask_t CAgramtab::Gleiche(GrammemCompare CompareFunc, const char* gram_
     if (!gram_codes2) return false;
     if (!strcmp(gram_codes1, "??")) return false;
     if (!strcmp(gram_codes2, "??")) return false;
-    size_t len1 = strlen(gram_codes1);
-    size_t len2 = strlen(gram_codes2);
-    for (size_t l = 0; l < len1; l += 2)
-        for (size_t m = 0; m < len2; m += 2)
-        {
-            const CAgramtabLine* l1 = GetLine(GramcodeToLineIndex(gram_codes1 + l));
-            const CAgramtabLine* l2 = GetLine(GramcodeToLineIndex(gram_codes2 + m));
-            if (CompareFunc(l1, l2))
-                grammems |= (l1->m_Grammems & l2->m_Grammems);
-        };
+    
+    try {
+        size_t len1 = strlen(gram_codes1);
+        size_t len2 = strlen(gram_codes2);
+        
+        for (size_t l = 0; l < len1; l += 2) {
+            size_t index1 = GramcodeToLineIndex(gram_codes1 + l);
+            if (index1 >= GetMaxGrmCount()) {
+                PLOGE << "Invalid index1 in Gleiche: " << index1 << " for code: " << std::string(gram_codes1 + l, 2);
+                continue;
+            }
+            
+            const CAgramtabLine* l1 = GetLine(index1);
+            if (!l1) {
+                PLOGE << "Null line pointer in Gleiche for code1: " << std::string(gram_codes1 + l, 2);
+                continue;
+            }
+            
+            for (size_t m = 0; m < len2; m += 2) {
+                size_t index2 = GramcodeToLineIndex(gram_codes2 + m);
+                if (index2 >= GetMaxGrmCount()) {
+                    PLOGE << "Invalid index2 in Gleiche: " << index2 << " for code: " << std::string(gram_codes2 + m, 2);
+                    continue;
+                }
+                
+                const CAgramtabLine* l2 = GetLine(index2);
+                if (!l2) {
+                    PLOGE << "Null line pointer in Gleiche for code2: " << std::string(gram_codes2 + m, 2);
+                    continue;
+                }
+                
+                if (CompareFunc && CompareFunc(l1, l2))
+                    grammems |= (l1->m_Grammems & l2->m_Grammems);
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        PLOGE << "Exception in Gleiche: " << e.what();
+    }
+    catch (...) {
+        PLOGE << "Unknown exception in Gleiche";
+    }
 
     return grammems;
-};
+}
 
 bool EqualAncodes (const CAgramtabLine* l1, const CAgramtabLine* l2)
 {
@@ -398,18 +573,58 @@ std::string CAgramtab::GleicheAncode1(GrammemCompare CompareFunc, std::string gr
     if (!CompareFunc) {
         CompareFunc = EqualAncodes;
     }
-    for (size_t l = 0; l < gram_codes1.length(); l += 2) {
-        const CAgramtabLine* l1 = GetLine(GramcodeToLineIndex(gram_codes1.c_str() + l));
-        for (size_t m = 0; m < gram_codes2.length(); m += 2)
-        {
-            const CAgramtabLine* l2 = GetLine(GramcodeToLineIndex(gram_codes2.c_str() + m));
-            if (CompareFunc(l1, l2))
-            {
-                result.append(gram_codes1.c_str() + l, 2);
-                break;
-            };
-        };
-    };
+    
+    try {
+        for (size_t l = 0; l < gram_codes1.length(); l += 2) {
+            if (l + 1 >= gram_codes1.length()) {
+                PLOGE << "Incomplete gram code at position " << l << " in gram_codes1: " << gram_codes1;
+                continue;
+            }
+            
+            size_t index1 = GramcodeToLineIndex(gram_codes1.c_str() + l);
+            if (index1 >= GetMaxGrmCount()) {
+                PLOGE << "Invalid index1 in GleicheAncode1: " << index1 << " for code: " << gram_codes1.substr(l, 2);
+                continue;
+            }
+            
+            const CAgramtabLine* l1 = GetLine(index1);
+            if (!l1) {
+                PLOGE << "Null line pointer in GleicheAncode1 for code1: " << gram_codes1.substr(l, 2);
+                continue;
+            }
+            
+            for (size_t m = 0; m < gram_codes2.length(); m += 2) {
+                if (m + 1 >= gram_codes2.length()) {
+                    PLOGE << "Incomplete gram code at position " << m << " in gram_codes2: " << gram_codes2;
+                    continue;
+                }
+                
+                size_t index2 = GramcodeToLineIndex(gram_codes2.c_str() + m);
+                if (index2 >= GetMaxGrmCount()) {
+                    PLOGE << "Invalid index2 in GleicheAncode1: " << index2 << " for code: " << gram_codes2.substr(m, 2);
+                    continue;
+                }
+                
+                const CAgramtabLine* l2 = GetLine(index2);
+                if (!l2) {
+                    PLOGE << "Null line pointer in GleicheAncode1 for code2: " << gram_codes2.substr(m, 2);
+                    continue;
+                }
+                
+                if (CompareFunc(l1, l2)) {
+                    result.append(gram_codes1.c_str() + l, 2);
+                    break;
+                }
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        PLOGE << "Exception in GleicheAncode1: " << e.what();
+    }
+    catch (...) {
+        PLOGE << "Unknown exception in GleicheAncode1";
+    }
+    
     return result;
 }
 
@@ -425,13 +640,30 @@ std::string CAgramtab::UniqueGramCodes(std::string gram_codes) const
 
 std::string  CAgramtab::GetTabStringByGramCode(const char* gram_code) const
 {
-    if (!gram_code || gram_code[0] == '?')
-        return "";
-    part_of_speech_t POS = GetPartOfSpeech(gram_code);
-    grammems_mask_t Grammems;
-    GetGrammems(gram_code, Grammems);
-    char buffer[256];
-    grammems_to_str(Grammems, buffer);
-    std::string POSstr = (POS == UnknownPartOfSpeech) ? "*" : GetPartOfSpeechStr(POS);
-    return POSstr + std::string(" ") + buffer;
+    try {
+        // Validate the input
+        if (!gram_code || gram_code[0] == '?' || strlen(gram_code) < 2 || !isalpha(gram_code[0]))
+            return "UNKNOWN";
+            
+        // Get part of speech safely - GetPartOfSpeech now has added validations
+        part_of_speech_t POS = GetPartOfSpeech(gram_code);
+        
+        // Get grammems safely 
+        grammems_mask_t Grammems = 0;
+        bool success = GetGrammems(gram_code, Grammems);
+        if (!success) {
+            return "UNKNOWN";
+        }
+        
+        // Format the output
+        char buffer[256] = {0};
+        grammems_to_str(Grammems, buffer);
+        std::string POSstr = (POS == UnknownPartOfSpeech) ? "*" : GetPartOfSpeechStr(POS);
+        return POSstr + std::string(" ") + buffer;
+    }
+    catch (...) {
+        // Catch any unexpected exceptions to prevent crashes
+        PLOGE << "Exception in GetTabStringByGramCode for gram_code: " << (gram_code ? gram_code : "null");
+        return "UNKNOWN";
+    }
 }

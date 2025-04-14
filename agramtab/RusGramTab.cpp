@@ -471,18 +471,40 @@ grammems_mask_t CRusGramTab::GleicheGenderNumberCase(const char* common_gram_cod
 		)
 		// нет сведений об одушевленности
 		return Gleiche(GenderNumberCaseRussian, gram_code_noun, gram_code_adj);
-	else
-		if ((GetLine(GramcodeToLineIndex(common_gram_code_noun))->m_Grammems & _QM(rNonAnimative)) > 0)
-			// неодушевленный
-			return Gleiche(GenderNumberCaseNotAnimRussian, gram_code_noun, gram_code_adj);
-		else
-			if ((GetLine(GramcodeToLineIndex(common_gram_code_noun))->m_Grammems & _QM(rAnimative)) > 0)
+	else {
+		try {
+			size_t lineIndex = GramcodeToLineIndex(common_gram_code_noun);
+			
+			// Validate the line index is in bounds
+			if (lineIndex >= GetMaxGrmCount()) {
+				PLOGE << "Invalid line index in GleicheGenderNumberCase: " << lineIndex;
+				return Gleiche(GenderNumberCaseRussian, gram_code_noun, gram_code_adj);
+			}
+			
+			const CAgramtabLine* pLine = GetLine(lineIndex);
+			
+			// Verify line pointer is valid
+			if (!pLine) {
+				PLOGE << "Null line pointer in GleicheGenderNumberCase for code: " << common_gram_code_noun;
+				return Gleiche(GenderNumberCaseRussian, gram_code_noun, gram_code_adj);
+			}
+			
+			if ((pLine->m_Grammems & _QM(rNonAnimative)) > 0)
+				// неодушевленный
+				return Gleiche(GenderNumberCaseNotAnimRussian, gram_code_noun, gram_code_adj);
+			else if ((pLine->m_Grammems & _QM(rAnimative)) > 0)
 				// одушевленный
 				return Gleiche(GenderNumberCaseAnimRussian, gram_code_noun, gram_code_adj);
 			else
 				// нет сведений об одушевленности
 				return Gleiche(GenderNumberCaseRussian, gram_code_noun, gram_code_adj);
-
+		}
+		catch (...) {
+			// Catch any unexpected exceptions to prevent crashes
+			PLOGE << "Exception in GleicheGenderNumberCase";
+			return Gleiche(GenderNumberCaseRussian, gram_code_noun, gram_code_adj);
+		}
+	}
 }
 
 
